@@ -335,7 +335,7 @@ def apply_total_row(ws, sum_min_col, sum_max_col, start_row, end_row, table_max_
 # ============================================================
 # STREAMLIT UI & WORKFLOW
 # ============================================================
-st.title("📄 Automated Timesheet Processor")
+st.title("Automated Timesheet Processor")
 st.write("Upload a scanned PDF timesheet to extract data into the 3-tab Excel format.")
 
 uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
@@ -517,9 +517,9 @@ if uploaded_file is not None:
                 workbook.save(final_output)
                 final_output.seek(0)
                 
-                st.success("✅ Extraction Complete!")
+                st.success("Extraction Completed.")
                 st.download_button(
-                    label="⬇️ Download Excel Timesheet",
+                    label="Download Excel Timesheet",
                     data=final_output,
                     file_name=f"Timesheet_Processed_{canonical_engineer}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
