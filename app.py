@@ -17,7 +17,7 @@ import io
 import gc
 
 # ============================================================
-# SETTINGS
+# SETTINGS & UTILS
 # ============================================================
 st.set_page_config(page_title="Timesheet & Invoice Processor", layout="wide")
 DPI = 300
@@ -32,13 +32,9 @@ FINAL_COLUMNS = [
     "Training Time", "Training OT Time", "Other Time", "Other OT Time"
 ]
 
-# ============================================================
-# UTILITY FUNCTIONS (TEXT, DATE, TIME)
-# ============================================================
 def clean_text(value):
     if value is None or pd.isna(value): return ""
-    val = str(value).replace("\n", " ").replace("\r", " ").replace("\t", " ")
-    return re.sub(r"\s+", " ", val).strip()
+    return re.sub(r"\s+", " ", str(value).replace("\n", " ").replace("\r", " ").replace("\t", " ")).strip()
 
 def search_text(value):
     return clean_text(value).lower().replace("—", "-").replace("–", "-")
@@ -80,7 +76,6 @@ def calculate_regular_ot(start_time, end_time):
     start, end = time_to_minutes(start_time), time_to_minutes(end_time)
     if start is None or end is None: return (0.0, 0.0)
     if end < start: end += 24 * 60
-    
     n_start, n_end = time_to_minutes(NORMAL_START), time_to_minutes(NORMAL_END)
     if n_start is None or n_end is None: return (0.0, round((end - start) / 60, 2))
     
@@ -112,7 +107,7 @@ def classify_activity(work_code, description):
     return "Other"
 
 # ============================================================
-# OCR & EXTRACTION FUNCTIONS
+# OCR ENGINE
 # ============================================================
 def prepare_page(pil_image):
     img = np.array(pil_image)
@@ -171,15 +166,13 @@ def detect_horizontal_lines(image):
                     candidates.append(int(round((y1 + y2) / 2)))
     return cluster_values(candidates, tolerance=6)
 
-def prepare_date_crop(crop):
-    if crop is None or crop.shape[0] < 5 or crop.shape[1] < 5: return None
-    crop = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
-    return cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(crop)
-
 def detect_date_rows(image, x_left, x_right):
     top, bottom = int(image.shape[0] * 0.03), int(image.shape[0] * 0.98)
-    processed = prepare_date_crop(image[top:bottom, x_left:x_right])
-    if processed is None: return []
+    crop = image[top:bottom, x_left:x_right]
+    if crop is None or crop.shape[0] < 5 or crop.shape[1] < 5: return []
+    processed = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+    processed = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(processed)
+    
     results = []
     configs = ["--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789./-", "--oem 3 --psm 11 -c tessedit_char_whitelist=0123456789./-"]
     for config in configs:
@@ -240,27 +233,6 @@ def ocr_cell(crop, cell_type):
     if not results: return ""
     return results[0] if cell_type in ["date", "time", "number"] else max(results, key=len)
 
-def clean_engineer_name(value):
-    val = clean_text(value)
-    if not val: return ""
-    return re.sub(r"\s+", " ", re.sub(r"[^A-Za-z0-9 .'-]", " ", val)).strip().upper()
-
-def choose_engineer_name(names):
-    names = [clean_engineer_name(n) for n in names if clean_engineer_name(n)]
-    if not names: return "Unknown"
-    from difflib import SequenceMatcher
-    groups = []
-    for name in names:
-        placed = False
-        for group in groups:
-            if SequenceMatcher(None, name, group[0]).ratio() >= 0.80:
-                group.append(name)
-                placed = True
-                break
-        if not placed: groups.append([name])
-    groups.sort(key=len, reverse=True)
-    return Counter(groups[0]).most_common(1)[0][0]
-
 def extract_row(image, x_bounds, y_top, y_bottom):
     cells = []
     for i in range(8):
@@ -271,53 +243,26 @@ def extract_row(image, x_bounds, y_top, y_bottom):
     parsed_date = parse_date(ocr_cell(cells[1], "date"))
     if not parsed_date: return None
     date_clean = parsed_date.strftime("%d.%m.%Y")
-    is_weekend = parsed_date.weekday() >= 5
     
     start_clean = normalise_time(ocr_cell(cells[2], "time"))
     end_clean = normalise_time(ocr_cell(cells[3], "time"))
-    eng_clean = clean_engineer_name(ocr_cell(cells[6], "name"))
+    eng_clean = clean_text(ocr_cell(cells[6], "name")).strip().upper()
     wc_clean = clean_text(ocr_cell(cells[4], "text"))
     desc_clean = clean_text(ocr_cell(cells[5], "text"))
     
-    if start_clean and end_clean:
-        reg_hrs, ot_hrs = calculate_regular_ot(start_clean, end_clean)
-        if is_weekend:
-            ot_hrs += reg_hrs
-            reg_hrs = 0.0
-    else:
-        reg_hrs, ot_hrs = 0.0, 0.0
-    
     return {
-        "Engineer Name": eng_clean, "Date": date_clean, "Start Time": start_clean, 
-        "End Time": end_clean, "Work Code": wc_clean, "Short Description": desc_clean, 
-        "Category": classify_activity(wc_clean, desc_clean), "Regular Hours": reg_hrs, 
-        "OT Hours": ot_hrs
+        "Engineer Name": eng_clean, 
+        "Date": date_clean, 
+        "Start Time": start_clean, 
+        "End Time": end_clean, 
+        "Work Code": wc_clean, 
+        "Description": desc_clean
     }
-
-def empty_final_row(engineer, date):
-    row = {"Engineer Name": engineer, "Date": date}
-    for col in FINAL_COLUMNS:
-        if col not in row: row[col] = 0.0
-    return row
-
-def add_hours(row, category, regular, overtime):
-    mapping = {
-        "Travel": ("Travel Time", "Travel OT Time"), "Working": ("Working Time", "Working OT Time"),
-        "Waiting": ("Waiting Time", "Waiting OT Time"), "Preparation": ("Preparation Time", "Preparation OT Time"),
-        "Maintenance": ("Maintenance Time", "Maintenance OT Time"), "Meeting": ("Meeting Time", "Meeting OT Time"),
-        "Training": ("Training Time", "Training OT Time"), "Other": ("Other Time", "Other OT Time")
-    }
-    r_col, ot_col = mapping.get(category, mapping["Other"])
-    row[r_col] += float(regular)
-    row[ot_col] += float(overtime)
 
 def apply_total_row(ws, sum_min_col, sum_max_col, start_row, end_row, table_max_col):
     border = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
     total_row = end_row + 1
-    first_cell = ws.cell(row=total_row, column=1, value="Total")
-    first_cell.font = Font(bold=True)
-    first_cell.alignment = Alignment(horizontal="center", vertical="center")
-    
+    ws.cell(row=total_row, column=1, value="Total").font = Font(bold=True)
     for c in range(1, table_max_col + 1):
         cell = ws.cell(row=total_row, column=c)
         cell.border = border
@@ -325,42 +270,38 @@ def apply_total_row(ws, sum_min_col, sum_max_col, start_row, end_row, table_max_
             col_letter = get_column_letter(c)
             cell.value = f"=SUM({col_letter}{start_row}:{col_letter}{end_row})"
             cell.font = Font(bold=True)
-            cell.alignment = Alignment(horizontal="center", vertical="center")
             cell.number_format = "0.00"
 
 # ============================================================
-# STREAMLIT UI & TABS
+# STREAMLIT UI
 # ============================================================
 st.title("Timesheet & Invoice Automation")
 
 tab1, tab2 = st.tabs(["Step 1: Timesheet Extraction", "Step 2: Invoice Generation"])
 
-# ------------------------------------------------------------
-# TAB 1: TIMESHEET OCR
-# ------------------------------------------------------------
 with tab1:
-    st.header("Automated Timesheet Processor")
-    st.write("Upload a scanned PDF timesheet to extract data into the 3-tab Excel format.")
+    st.header("100% Accuracy Mode: Human-in-the-Loop Extraction")
+    st.write("Upload a PDF. The AI will extract the data, and you can edit any mistakes directly in the grid before generating the final Excel file.")
 
     uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
+    
+    if "extracted_data" not in st.session_state:
+        st.session_state.extracted_data = None
 
-    if uploaded_file is not None:
-        if st.button("Extract Data from PDF"):
-            with st.spinner('Processing PDF... Reading one page at a time to optimize memory. Please wait.'):
+    if uploaded_file is not None and st.session_state.extracted_data is None:
+        if st.button("Run Initial Extraction"):
+            with st.spinner('Running OCR extraction...'):
                 try:
                     pdf_bytes = uploaded_file.read()
                     pdf_info = pdfinfo_from_bytes(pdf_bytes)
                     total_pages = pdf_info["Pages"]
                     
-                    raw_rows, engineer_names = [], []
+                    raw_rows = []
                     progress_bar = st.progress(0)
                     
                     for page_num in range(1, total_pages + 1):
-                        page_images = convert_from_bytes(
-                            pdf_bytes, dpi=DPI, fmt="png", thread_count=1, first_page=page_num, last_page=page_num
-                        )
-                        pil_page = page_images[0]
-                        image = prepare_page(pil_page)
+                        page_images = convert_from_bytes(pdf_bytes, dpi=DPI, fmt="png", thread_count=1, first_page=page_num, last_page=page_num)
+                        image = prepare_page(page_images[0])
                         h, w = image.shape[:2]
                         
                         x_bounds = detect_vertical_lines(image)
@@ -371,173 +312,163 @@ with tab1:
                             extracted = extract_row(image, x_bounds, row_bounds[row_idx], row_bounds[row_idx+1])
                             if extracted:
                                 raw_rows.append(extracted)
-                                if extracted["Engineer Name"]: engineer_names.append(extracted["Engineer Name"])
                                 
                         progress_bar.progress(page_num / total_pages)
-                        
-                        del page_images, pil_page, image
+                        del page_images, image
                         gc.collect()
-                    
-                    if not raw_rows:
-                        st.error("No usable rows extracted. Please ensure the PDF scan is clear.")
-                        st.stop()
-                    
-                    canonical_engineer = choose_engineer_name(engineer_names)
-                    for r in raw_rows: r["Engineer Name"] = canonical_engineer
-                    
-                    aggregated = {}
-                    for r in raw_rows:
-                        key = (r["Engineer Name"], r["Date"])
-                        if key not in aggregated: aggregated[key] = empty_final_row(key[0], key[1])
-                        add_hours(aggregated[key], r["Category"], r["Regular Hours"], r["OT Hours"])
-                    
-                    # --- Build DataFrames ---
-                    final_df = pd.DataFrame(list(aggregated.values()))
-                    for col in FINAL_COLUMNS:
-                        if col not in final_df.columns: final_df[col] = "" if col in ["Engineer Name", "Date"] else 0.0
-                    final_df = final_df[FINAL_COLUMNS]
-                    
-                    final_df["_actual_date"] = final_df["Date"].apply(parse_date)
-                    final_df = final_df.sort_values(by=["_actual_date", "Engineer Name"]).reset_index(drop=True)
-                    for col in FINAL_COLUMNS[2:]:
-                        final_df[col] = pd.to_numeric(final_df[col], errors="coerce").fillna(0).round(2)
-                    
-                    min_date = final_df["_actual_date"].min()
-                    max_date = final_df["_actual_date"].max()
-                    full_date_range = pd.date_range(start=min_date, end=max_date, freq='D')
-                    dates_df = pd.DataFrame({"_actual_date": full_date_range})
-                    dates_df["Date"] = dates_df["_actual_date"].dt.strftime("%d.%m.%Y")
-                    dates_df["Date_formatted"] = dates_df["_actual_date"].dt.strftime("%d-%b")
-                    dates_df["Day"] = dates_df["_actual_date"].dt.strftime("%a")
-                    
-                    temp_df = pd.merge(dates_df, final_df.drop(columns=["_actual_date", "Engineer Name"], errors="ignore"), on="Date", how="left")
-                    for col in FINAL_COLUMNS[2:]:
-                        temp_df[col] = temp_df[col].fillna(0.0)
                         
-                    # L.Trpt Logic: 1 if waiting time is 0 and work was performed, else ""
-                    wait_times = temp_df["Waiting Time"] + temp_df["Waiting OT Time"]
-                    l_trpt_vals = []
-                    for i in range(len(temp_df)):
-                        w = wait_times[i]
-                        activity_sum = (temp_df.loc[i, "Travel Time"] + temp_df.loc[i, "Travel OT Time"] + 
-                                        temp_df.loc[i, "Working Time"] + temp_df.loc[i, "Working OT Time"] + 
-                                        temp_df.loc[i, "Preparation Time"] + temp_df.loc[i, "Preparation OT Time"] + w)
-                        if activity_sum > 0 and (w == 0 or pd.isna(w)):
-                            l_trpt_vals.append(1)
-                        else:
-                            l_trpt_vals.append("")
-                    
-                    client_df = pd.DataFrame({
-                        "Date": temp_df["Date_formatted"], "Day": temp_df["Day"], "PH": "",
-                        "Travel": temp_df["Travel Time"] + temp_df["Travel OT Time"], "NT": temp_df["Working Time"], "OT": temp_df["Working OT Time"],
-                        "Waiting time": wait_times, "Preparation": temp_df["Preparation Time"] + temp_df["Preparation OT Time"],
-                        "L.Trpt": l_trpt_vals, "Remark": ""
-                    })
-                    
-                    engineer_df = pd.DataFrame({
-                        "Date": temp_df["Date_formatted"], "Day": temp_df["Day"], "PH": "",
-                        "Travel": temp_df["Travel Time"], "Travel OT": temp_df["Travel OT Time"], "Normal Time": temp_df["Working Time"],
-                        "OT": temp_df["Working OT Time"], "Preparation": temp_df["Preparation Time"] + temp_df["Preparation OT Time"], "Remark": ""
-                    })
-                    
-                    for df in [client_df, engineer_df]:
-                        for col in df.columns:
-                            if df[col].dtype == 'float64': df[col] = df[col].replace(0.0, "")
-                    
-                    final_df = final_df.drop(columns=["_actual_date"])
-                    
-                    # --- Excel Generation in Memory ---
-                    output = io.BytesIO()
-                    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                        final_df.to_excel(writer, sheet_name="Detailed Timesheet", index=False)
-                        client_df.to_excel(writer, sheet_name="Client", index=False, startrow=2)
-                        engineer_df.to_excel(writer, sheet_name="Engineer", index=False, startrow=2)
-                    
-                    output.seek(0)
-                    workbook = load_workbook(output)
-                    border = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
-                    gray_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
-                    yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
-                    
-                    # Formatting Tab 1
-                    ws_raw = workbook["Detailed Timesheet"]
-                    for cell in ws_raw[1]:
-                        cell.font = Font(bold=True)
-                        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-                    ws_raw.row_dimensions[1].height = 45
-                    ws_raw.freeze_panes = "C2"
-                    for row in ws_raw.iter_rows(max_row=ws_raw.max_row):
-                        for cell in row:
-                            cell.border = border
-                            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-                            if cell.column >= 3 and cell.row > 1 and isinstance(cell.value, (int, float)): cell.number_format = "0.00"
-                    if ws_raw.max_row >= 2: apply_total_row(ws_raw, 3, 18, 2, ws_raw.max_row, 18)
-                    widths = {"A":24, "B":14, "C":16, "D":18, "E":16, "F":18, "G":16, "H":18, "I":20, "J":22, "K":20, "L":22, "M":17, "N":19, "O":17, "P":19, "Q":15, "R":17}
-                    for col, width in widths.items(): ws_raw.column_dimensions[col].width = width
-                    
-                    # Formatting Tab 2 (Client) - Sum columns D through I (4 to 9)
-                    ws_client = workbook["Client"]
-                    ws_client["A1"] = "Timesheet Calculation (Singapore)"
-                    ws_client["A1"].font = Font(size=14, bold=True)
-                    ws_client["A1"].alignment = Alignment(horizontal="center", vertical="center")
-                    ws_client.merge_cells("A1:J1")
-                    ws_client.row_dimensions[1].height = 25
-                    for cell in ws_client[3]:
-                        cell.font = Font(bold=True)
-                        cell.fill = gray_fill
-                        cell.alignment = Alignment(horizontal="center", vertical="center")
-                        cell.border = border
-                    for row in ws_client.iter_rows(min_row=4, max_row=ws_client.max_row):
-                        for cell in row:
-                            cell.border = border
-                            cell.alignment = Alignment(horizontal="center", vertical="center")
-                    if ws_client.max_row >= 4: apply_total_row(ws_client, 4, 9, 4, ws_client.max_row, 10)
-                    client_widths = {"A":12, "B":10, "C":8, "D":12, "E":12, "F":12, "G":14, "H":14, "I":10, "J":25}
-                    for col, w in client_widths.items(): ws_client.column_dimensions[col].width = w
-                    
-                    # Formatting Tab 3
-                    ws_eng = workbook["Engineer"]
-                    ws_eng["A1"] = "Timesheet Calculation (ENGINEER OT)"
-                    ws_eng["A1"].font = Font(size=14, bold=True)
-                    ws_eng["A1"].alignment = Alignment(horizontal="center", vertical="center")
-                    ws_eng.merge_cells("A1:I1")
-                    ws_eng.row_dimensions[1].height = 25
-                    for cell in ws_eng[3]:
-                        cell.font = Font(bold=True)
-                        cell.alignment = Alignment(horizontal="center", vertical="center")
-                        cell.border = border
-                        if cell.value in ["Travel OT", "OT"]: cell.fill = yellow_fill
-                        else: cell.fill = gray_fill
-                    for row in ws_eng.iter_rows(min_row=4, max_row=ws_eng.max_row):
-                        for cell in row:
-                            cell.border = border
-                            cell.alignment = Alignment(horizontal="center", vertical="center")
-                    if ws_eng.max_row >= 4: apply_total_row(ws_eng, 4, 8, 4, ws_eng.max_row, 9)
-                    eng_widths = {"A":12, "B":10, "C":8, "D":12, "E":12, "F":15, "G":12, "H":14, "I":25}
-                    for col, w in eng_widths.items(): ws_eng.column_dimensions[col].width = w
-                    
-                    final_output = io.BytesIO()
-                    workbook.save(final_output)
-                    final_output.seek(0)
-                    
-                    st.success("Extraction Complete!")
-                    st.download_button(
-                        label="Download Processed Timesheet",
-                        data=final_output,
-                        file_name=f"Timesheet_{canonical_engineer}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-                    
+                    if raw_rows:
+                        st.session_state.extracted_data = pd.DataFrame(raw_rows)
+                        st.rerun()
+                    else:
+                        st.error("No data extracted. Ensure scan is clear.")
                 except Exception as e:
-                    st.error(f"An error occurred: {str(e)}")
+                    st.error(f"Error: {e}")
+
+    # Editable Grid Logic
+    if st.session_state.extracted_data is not None:
+        st.success("Initial extraction complete! Please review and correct any errors in the grid below:")
+        
+        # Display editable dataframe
+        edited_df = st.data_editor(st.session_state.extracted_data, num_rows="dynamic", use_container_width=True)
+        
+        if st.button("Generate Final Excel with Verified Data"):
+            try:
+                aggregated = {}
+                canonical_engineer = edited_df["Engineer Name"].mode()[0] if not edited_df.empty else "Unknown"
+                
+                for idx, row in edited_df.iterrows():
+                    eng = str(row["Engineer Name"])
+                    dt = str(row["Date"])
+                    st_time = str(row.get("Start Time", ""))
+                    ed_time = str(row.get("End Time", ""))
+                    wc = str(row.get("Work Code", ""))
+                    desc = str(row.get("Description", ""))
+                    
+                    cat = classify_activity(wc, desc)
+                    
+                    # Manual calc based on verified inputs
+                    is_weekend = False
+                    parsed_d = parse_date(dt)
+                    if parsed_d and parsed_d.weekday() >= 5: is_weekend = True
+                    
+                    reg, ot = 0.0, 0.0
+                    if st_time and ed_time and st_time != "nan" and ed_time != "nan":
+                        r, o = calculate_regular_ot(st_time, ed_time)
+                        if is_weekend:
+                            ot = r + o
+                            reg = 0.0
+                        else:
+                            reg, ot = r, o
+                    
+                    key = (eng, dt)
+                    if key not in aggregated:
+                        aggregated[key] = {"Engineer Name": eng, "Date": dt}
+                        for col in FINAL_COLUMNS[2:]: aggregated[key][col] = 0.0
+                        
+                    mapping = {"Travel": ("Travel Time", "Travel OT Time"), "Working": ("Working Time", "Working OT Time"),
+                               "Waiting": ("Waiting Time", "Waiting OT Time"), "Preparation": ("Preparation Time", "Preparation OT Time"),
+                               "Maintenance": ("Maintenance Time", "Maintenance OT Time"), "Meeting": ("Meeting Time", "Meeting OT Time"),
+                               "Training": ("Training Time", "Training OT Time"), "Other": ("Other Time", "Other OT Time")}
+                    r_col, ot_col = mapping.get(cat, mapping["Other"])
+                    
+                    aggregated[key][r_col] += float(reg)
+                    aggregated[key][ot_col] += float(ot)
+
+                final_df = pd.DataFrame(list(aggregated.values()))
+                final_df["_actual_date"] = final_df["Date"].apply(parse_date)
+                final_df = final_df.sort_values(by=["_actual_date"]).reset_index(drop=True)
+                
+                # Continuous Date filling
+                min_date = final_df["_actual_date"].min()
+                max_date = final_df["_actual_date"].max()
+                dates_df = pd.DataFrame({"_actual_date": pd.date_range(start=min_date, end=max_date, freq='D')})
+                dates_df["Date"] = dates_df["_actual_date"].dt.strftime("%d.%m.%Y")
+                dates_df["Date_formatted"] = dates_df["_actual_date"].dt.strftime("%d-%b")
+                dates_df["Day"] = dates_df["_actual_date"].dt.strftime("%a")
+                
+                temp_df = pd.merge(dates_df, final_df.drop(columns=["_actual_date", "Engineer Name"], errors="ignore"), on="Date", how="left").fillna(0.0)
+                
+                wait_times = temp_df["Waiting Time"] + temp_df["Waiting OT Time"]
+                l_trpt = []
+                for i in range(len(temp_df)):
+                    w = wait_times[i]
+                    act = sum([temp_df.loc[i, c] for c in ["Travel Time", "Travel OT Time", "Working Time", "Working OT Time", "Preparation Time", "Preparation OT Time"]])
+                    if act > 0 and w == 0: l_trpt.append(1)
+                    else: l_trpt.append("")
+                
+                client_df = pd.DataFrame({
+                    "Date": temp_df["Date_formatted"], "Day": temp_df["Day"], "PH": "",
+                    "Travel": temp_df["Travel Time"] + temp_df["Travel OT Time"], "NT": temp_df["Working Time"], "OT": temp_df["Working OT Time"],
+                    "Waiting time": wait_times, "Preparation": temp_df["Preparation Time"] + temp_df["Preparation OT Time"],
+                    "L.Trpt": l_trpt, "Remark": ""
+                })
+                engineer_df = pd.DataFrame({
+                    "Date": temp_df["Date_formatted"], "Day": temp_df["Day"], "PH": "",
+                    "Travel": temp_df["Travel Time"], "Travel OT": temp_df["Travel OT Time"], "Normal Time": temp_df["Working Time"],
+                    "OT": temp_df["Working OT Time"], "Preparation": temp_df["Preparation Time"] + temp_df["Preparation OT Time"], "Remark": ""
+                })
+                
+                for df in [client_df, engineer_df]:
+                    for col in df.columns:
+                        if df[col].dtype == 'float64': df[col] = df[col].replace(0.0, "")
+                
+                final_df = final_df.drop(columns=["_actual_date"])
+                
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                    final_df.to_excel(writer, sheet_name="Detailed Timesheet", index=False)
+                    client_df.to_excel(writer, sheet_name="Client", index=False, startrow=2)
+                    engineer_df.to_excel(writer, sheet_name="Engineer", index=False, startrow=2)
+                
+                output.seek(0)
+                workbook = load_workbook(output)
+                border = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
+                gray_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+                yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+                
+                for sheet, header_cols, is_client in [("Detailed Timesheet", 18, False), ("Client", 10, True), ("Engineer", 9, False)]:
+                    ws = workbook[sheet]
+                    if sheet != "Detailed Timesheet":
+                        for cell in ws[3]:
+                            cell.font = Font(bold=True)
+                            cell.alignment = Alignment(horizontal="center", vertical="center")
+                            cell.border = border
+                            if cell.value in ["Travel OT", "OT"]: cell.fill = yellow_fill
+                            else: cell.fill = gray_fill
+                        min_r = 4
+                        if is_client: apply_total_row(ws, 4, 9, 4, ws.max_row, 10)
+                        else: apply_total_row(ws, 4, 8, 4, ws.max_row, 9)
+                    else:
+                        for cell in ws[1]:
+                            cell.font = Font(bold=True)
+                            cell.alignment = Alignment(horizontal="center", vertical="center")
+                        min_r = 2
+                        apply_total_row(ws, 3, 18, 2, ws.max_row, 18)
+                        
+                    for row in ws.iter_rows(min_row=min_r, max_row=ws.max_row):
+                        for cell in row:
+                            cell.border = border
+                            cell.alignment = Alignment(horizontal="center", vertical="center")
+                
+                final_output = io.BytesIO()
+                workbook.save(final_output)
+                final_output.seek(0)
+                
+                st.download_button("Download Verified Excel", data=final_output, file_name=f"Verified_Timesheet_{canonical_engineer}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                
+            except Exception as e:
+                st.error(f"Error compiling Excel: {e}")
+                
+        if st.button("Reset / Upload New File"):
+            st.session_state.extracted_data = None
+            st.rerun()
 
 # ------------------------------------------------------------
 # TAB 2: INVOICE GENERATION
 # ------------------------------------------------------------
 with tab2:
     st.header("Final Invoice Generation")
-    st.write("Fill in the customer details and generate the final invoice template.")
-    
     st.markdown("### 1. Upload Required Files")
     col1, col2 = st.columns(2)
     with col1:
@@ -561,12 +492,7 @@ with tab2:
         engineer_name_invoice = st.text_input("Engineer Name (For Expenses)")
         
     st.markdown("### 3. Select Engineer Role")
-    position = st.selectbox("Assign Hours to Position:", [
-        "Service Technician", 
-        "Service Engineer", 
-        "Senior Service Engineer", 
-        "Specialist Service Engineer"
-    ])
+    position = st.selectbox("Assign Hours to Position:", ["Service Technician", "Service Engineer", "Senior Service Engineer", "Specialist Service Engineer"])
     
     if st.button("Generate Final Invoice", type="primary"):
         if not timesheet_excel or not template_excel:
@@ -574,7 +500,6 @@ with tab2:
         else:
             try:
                 client_df = pd.read_excel(timesheet_excel, sheet_name="Client", skiprows=2)
-                
                 travel_sum = pd.to_numeric(client_df['Travel'], errors='coerce').sum()
                 nt_sum = pd.to_numeric(client_df['NT'], errors='coerce').sum()
                 ot_sum = pd.to_numeric(client_df['OT'], errors='coerce').sum()
@@ -582,29 +507,12 @@ with tab2:
                 prep_sum = pd.to_numeric(client_df['Preparation'], errors='coerce').sum()
                 
                 wb = load_workbook(template_excel)
-                if "SG" not in wb.sheetnames:
-                    st.error("The uploaded template does not contain an 'SG' tab.")
-                    st.stop()
-                    
                 ws = wb["SG"]
                 
-                ws["C7"] = cust_name
-                ws["C8"] = inv_address
-                ws["C9"] = del_address
-                ws["C10"] = reference
-                ws["C11"] = cust_po
-                ws["C12"] = proj_no
-                ws["C13"] = svc_type
-                ws["C14"] = vessel_name
-                ws["C15"] = vessel_no
+                ws["C7"], ws["C8"], ws["C9"], ws["C10"], ws["C11"] = cust_name, inv_address, del_address, reference, cust_po
+                ws["C12"], ws["C13"], ws["C14"], ws["C15"] = proj_no, svc_type, vessel_name, vessel_no
                 
-                r_offset = 20
-                if position == "Service Engineer":
-                    r_offset = 30
-                elif position == "Senior Service Engineer":
-                    r_offset = 40
-                elif position == "Specialist Service Engineer":
-                    r_offset = 50
+                r_offset = {"Service Technician": 20, "Service Engineer": 30, "Senior Service Engineer": 40, "Specialist Service Engineer": 50}[position]
                     
                 ws[f"D{r_offset + 1}"] = travel_sum if travel_sum > 0 else ""
                 ws[f"D{r_offset + 2}"] = nt_sum if nt_sum > 0 else ""
@@ -612,26 +520,16 @@ with tab2:
                 ws[f"D{r_offset + 4}"] = waiting_sum if waiting_sum > 0 else ""
                 ws[f"D{r_offset + 5}"] = prep_sum if prep_sum > 0 else ""
                 
-                expense_row = None
                 for row_idx in range(1, 150):
-                    cell_val = ws.cell(row=row_idx, column=2).value
-                    if cell_val and str(cell_val).strip() == "Expenses":
-                        expense_row = row_idx
+                    if ws.cell(row=row_idx, column=2).value and str(ws.cell(row=row_idx, column=2).value).strip() == "Expenses":
+                        ws.cell(row=row_idx + 2, column=3).value = engineer_name_invoice
                         break
-                        
-                if expense_row:
-                    ws.cell(row=expense_row + 2, column=3).value = engineer_name_invoice
                 
                 invoice_output = io.BytesIO()
                 wb.save(invoice_output)
                 invoice_output.seek(0)
                 
                 st.success("Invoice Generated Successfully!")
-                st.download_button(
-                    label="Download Final Invoice",
-                    data=invoice_output,
-                    file_name=f"Invoice_{cust_name or 'Completed'}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                st.download_button("Download Final Invoice", data=invoice_output, file_name=f"Invoice_{cust_name or 'Completed'}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             except Exception as e:
-                st.error(f"An error occurred while processing the invoice: {str(e)}")
+                st.error(f"An error occurred: {str(e)}")
