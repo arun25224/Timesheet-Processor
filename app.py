@@ -523,7 +523,7 @@ with tab1:
 # TAB 2: INVOICE GENERATION
 # ------------------------------------------------------------
 with tab2:
-    st.header("🧾 Final Invoice Generation")
+    st.header("Final Invoice Generation")
     st.write("Fill in the customer details and generate the final invoice template.")
     
     st.markdown("### 1. Upload Required Files")
@@ -557,7 +557,7 @@ with tab2:
     
     if st.button("Generate Final Invoice", type="primary"):
         if not timesheet_excel or not template_excel:
-            st.error("⚠️ Please upload both the Processed Timesheet AND the Invoice Template first.")
+            st.error("Please upload both the Processed Timesheet AND the Invoice Template first.")
         else:
             try:
                 # 1. Read Client Tab from Timesheet
@@ -573,7 +573,7 @@ with tab2:
                 # 2. Open Invoice Template
                 wb = load_workbook(template_excel)
                 if "SG" not in wb.sheetnames:
-                    st.error("⚠️ The uploaded template does not contain an 'SG' tab.")
+                    st.error("The uploaded template does not contain an 'SG' tab.")
                     st.stop()
                     
                 ws = wb["SG"]
@@ -609,9 +609,9 @@ with tab2:
                 wb.save(invoice_output)
                 invoice_output.seek(0)
                 
-                st.success("✅ Invoice Generated Successfully!")
+                st.success("Invoice Generated Successfully!")
                 st.download_button(
-                    label="⬇️ Download Final Invoice",
+                    label="Download Final Invoice",
                     data=invoice_output,
                     file_name=f"Invoice_{cust_name or 'Completed'}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
