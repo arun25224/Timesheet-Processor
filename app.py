@@ -277,11 +277,11 @@ def apply_total_row(ws, sum_min_col, sum_max_col, start_row, end_row, table_max_
 # ============================================================
 st.title("Timesheet & Invoice Automation")
 
-tab1, tab2 = st.tabs(["Step 1: Timesheet Extraction", "Step 2: Invoice Generation"])
+tab1, tab2 = st.tabs(["Timesheet Extraction", "Invoice Generation"])
 
 with tab1:
-    st.header("100% Accuracy Mode: Human-in-the-Loop Extraction")
-    st.write("Upload a PDF. The AI will extract the data, and you can edit any mistakes directly in the grid before generating the final Excel file.")
+    st.header("Upload your timesheet")
+    st.write("The system will extract the data, and you can edit any mistakes directly in the grid before generating the final Excel file.")
 
     uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
     
