@@ -14,12 +14,12 @@ from openpyxl import load_workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
 import io
-import gc  # Used to aggressively clear RAM
+import gc
 
 # ============================================================
 # SETTINGS
 # ============================================================
-st.set_page_config(page_title="Timesheet Processor", layout="centered")
+st.set_page_config(page_title="Timesheet & Invoice Processor", layout="wide")
 DPI = 300
 NORMAL_START = "08:00"
 NORMAL_END = "16:00"
@@ -33,7 +33,7 @@ FINAL_COLUMNS = [
 ]
 
 # ============================================================
-# TEXT & DATE UTILS
+# UTILITY FUNCTIONS (TEXT, DATE, TIME)
 # ============================================================
 def clean_text(value):
     if value is None or pd.isna(value): return ""
@@ -91,9 +91,6 @@ def calculate_regular_ot(start_time, end_time):
         else: ot += 1
     return (round(reg / 60, 2), round(ot / 60, 2))
 
-# ============================================================
-# ACTIVITY CLASSIFICATION
-# ============================================================
 CATEGORY_KEYWORDS = {
     "Travel": ["travel", "journey", "transit", "transport", "transfer"],
     "Waiting": ["waiting", "wait", "standby", "stand by"],
@@ -115,7 +112,7 @@ def classify_activity(work_code, description):
     return "Other"
 
 # ============================================================
-# IMAGE PROCESSING & OCR
+# OCR & EXTRACTION FUNCTIONS
 # ============================================================
 def prepare_page(pil_image):
     img = np.array(pil_image)
@@ -284,7 +281,6 @@ def extract_row(image, x_bounds, y_top, y_bottom):
     
     if start_clean and end_clean:
         reg_hrs, ot_hrs = calculate_regular_ot(start_clean, end_clean)
-        # Apply Weekend Rule: All work is Overtime
         if is_weekend:
             ot_hrs += reg_hrs
             reg_hrs = 0.0
@@ -333,197 +329,292 @@ def apply_total_row(ws, sum_min_col, sum_max_col, start_row, end_row, table_max_
             cell.number_format = "0.00"
 
 # ============================================================
-# STREAMLIT UI & WORKFLOW
+# STREAMLIT UI & TABS
 # ============================================================
-st.title("Automated Timesheet Processor")
-st.write("Upload a scanned PDF timesheet to extract data into the 3-tab Excel format.")
+st.title("📄 Timesheet & Invoice Automation")
 
-uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
+tab1, tab2 = st.tabs(["📄 Step 1: Timesheet Extraction", "🧾 Step 2: Invoice Generation"])
 
-if uploaded_file is not None:
-    if st.button("Process Timesheet"):
-        with st.spinner('Processing PDF... Reading one page at a time to optimize memory. Please wait.'):
-            try:
-                pdf_bytes = uploaded_file.read()
-                
-                # Fetch total page count without loading images into memory
-                pdf_info = pdfinfo_from_bytes(pdf_bytes)
-                total_pages = pdf_info["Pages"]
-                
-                raw_rows, engineer_names = [], []
-                progress_bar = st.progress(0)
-                
-                # --- MEMORY EFFICIENT LOOP ---
-                for page_num in range(1, total_pages + 1):
-                    # Convert ONLY the current page
-                    page_images = convert_from_bytes(
-                        pdf_bytes, 
-                        dpi=DPI, 
-                        fmt="png", 
-                        thread_count=1,
-                        first_page=page_num,
-                        last_page=page_num
+# ------------------------------------------------------------
+# TAB 1: TIMESHEET OCR
+# ------------------------------------------------------------
+with tab1:
+    st.header("Automated Timesheet Processor")
+    st.write("Upload a scanned PDF timesheet to extract data into the 3-tab Excel format.")
+
+    uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
+
+    if uploaded_file is not None:
+        if st.button("Extract Data from PDF"):
+            with st.spinner('Processing PDF... Reading one page at a time to optimize memory. Please wait.'):
+                try:
+                    pdf_bytes = uploaded_file.read()
+                    pdf_info = pdfinfo_from_bytes(pdf_bytes)
+                    total_pages = pdf_info["Pages"]
+                    
+                    raw_rows, engineer_names = [], []
+                    progress_bar = st.progress(0)
+                    
+                    for page_num in range(1, total_pages + 1):
+                        page_images = convert_from_bytes(
+                            pdf_bytes, dpi=DPI, fmt="png", thread_count=1, first_page=page_num, last_page=page_num
+                        )
+                        pil_page = page_images[0]
+                        image = prepare_page(pil_page)
+                        h, w = image.shape[:2]
+                        
+                        x_bounds = detect_vertical_lines(image)
+                        date_rows = detect_date_rows(image, x_bounds[1], x_bounds[2])
+                        row_bounds = create_row_boundaries(date_rows, detect_horizontal_lines(image), h)
+                        
+                        for row_idx in range(len(date_rows)):
+                            extracted = extract_row(image, x_bounds, row_bounds[row_idx], row_bounds[row_idx+1])
+                            if extracted:
+                                raw_rows.append(extracted)
+                                if extracted["Engineer Name"]: engineer_names.append(extracted["Engineer Name"])
+                                
+                        progress_bar.progress(page_num / total_pages)
+                        
+                        # Aggressively wipe memory before the next page loads
+                        del page_images, pil_page, image
+                        gc.collect()
+                    
+                    if not raw_rows:
+                        st.error("No usable rows extracted. Please ensure the PDF scan is clear.")
+                        st.stop()
+                    
+                    canonical_engineer = choose_engineer_name(engineer_names)
+                    for r in raw_rows: r["Engineer Name"] = canonical_engineer
+                    
+                    aggregated = {}
+                    for r in raw_rows:
+                        key = (r["Engineer Name"], r["Date"])
+                        if key not in aggregated: aggregated[key] = empty_final_row(key[0], key[1])
+                        add_hours(aggregated[key], r["Category"], r["Regular Hours"], r["OT Hours"])
+                    
+                    # --- Build DataFrames ---
+                    final_df = pd.DataFrame(list(aggregated.values()))
+                    for col in FINAL_COLUMNS:
+                        if col not in final_df.columns: final_df[col] = "" if col in ["Engineer Name", "Date"] else 0.0
+                    final_df = final_df[FINAL_COLUMNS]
+                    
+                    final_df["_actual_date"] = final_df["Date"].apply(parse_date)
+                    final_df = final_df.sort_values(by=["_actual_date", "Engineer Name"]).reset_index(drop=True)
+                    for col in FINAL_COLUMNS[2:]:
+                        final_df[col] = pd.to_numeric(final_df[col], errors="coerce").fillna(0).round(2)
+                    
+                    min_date = final_df["_actual_date"].min()
+                    max_date = final_df["_actual_date"].max()
+                    full_date_range = pd.date_range(start=min_date, end=max_date, freq='D')
+                    dates_df = pd.DataFrame({"_actual_date": full_date_range})
+                    dates_df["Date"] = dates_df["_actual_date"].dt.strftime("%d.%m.%Y")
+                    dates_df["Date_formatted"] = dates_df["_actual_date"].dt.strftime("%d-%b")
+                    dates_df["Day"] = dates_df["_actual_date"].dt.strftime("%a")
+                    
+                    temp_df = pd.merge(dates_df, final_df.drop(columns=["_actual_date", "Engineer Name"], errors="ignore"), on="Date", how="left")
+                    for col in FINAL_COLUMNS[2:]:
+                        temp_df[col] = temp_df[col].fillna(0.0)
+                    
+                    client_df = pd.DataFrame({
+                        "Date": temp_df["Date_formatted"], "Day": temp_df["Day"], "PH": "",
+                        "Travel": temp_df["Travel Time"] + temp_df["Travel OT Time"], "NT": temp_df["Working Time"], "OT": temp_df["Working OT Time"],
+                        "Waiting time": temp_df["Waiting Time"] + temp_df["Waiting OT Time"], "Preparation": temp_df["Preparation Time"] + temp_df["Preparation OT Time"],
+                        "L.Trpt": "", "Remark": ""
+                    })
+                    
+                    engineer_df = pd.DataFrame({
+                        "Date": temp_df["Date_formatted"], "Day": temp_df["Day"], "PH": "",
+                        "Travel": temp_df["Travel Time"], "Travel OT": temp_df["Travel OT Time"], "Normal Time": temp_df["Working Time"],
+                        "OT": temp_df["Working OT Time"], "Preparation": temp_df["Preparation Time"] + temp_df["Preparation OT Time"], "Remark": ""
+                    })
+                    
+                    for df in [client_df, engineer_df]:
+                        for col in df.columns:
+                            if df[col].dtype == 'float64': df[col] = df[col].replace(0.0, "")
+                    
+                    final_df = final_df.drop(columns=["_actual_date"])
+                    
+                    # --- Excel Generation in Memory ---
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                        final_df.to_excel(writer, sheet_name="Detailed Timesheet", index=False)
+                        client_df.to_excel(writer, sheet_name="Client", index=False, startrow=2)
+                        engineer_df.to_excel(writer, sheet_name="Engineer", index=False, startrow=2)
+                    
+                    output.seek(0)
+                    workbook = load_workbook(output)
+                    border = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
+                    gray_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+                    yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+                    
+                    # Formatting Tab 1
+                    ws_raw = workbook["Detailed Timesheet"]
+                    for cell in ws_raw[1]:
+                        cell.font = Font(bold=True)
+                        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                    ws_raw.row_dimensions[1].height = 45
+                    ws_raw.freeze_panes = "C2"
+                    for row in ws_raw.iter_rows(max_row=ws_raw.max_row):
+                        for cell in row:
+                            cell.border = border
+                            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                            if cell.column >= 3 and cell.row > 1 and isinstance(cell.value, (int, float)): cell.number_format = "0.00"
+                    if ws_raw.max_row >= 2: apply_total_row(ws_raw, 3, 18, 2, ws_raw.max_row, 18)
+                    widths = {"A":24, "B":14, "C":16, "D":18, "E":16, "F":18, "G":16, "H":18, "I":20, "J":22, "K":20, "L":22, "M":17, "N":19, "O":17, "P":19, "Q":15, "R":17}
+                    for col, width in widths.items(): ws_raw.column_dimensions[col].width = width
+                    
+                    # Formatting Tab 2
+                    ws_client = workbook["Client"]
+                    ws_client["A1"] = "Timesheet Calculation (Singapore)"
+                    ws_client["A1"].font = Font(size=14, bold=True)
+                    ws_client["A1"].alignment = Alignment(horizontal="center", vertical="center")
+                    ws_client.merge_cells("A1:J1")
+                    ws_client.row_dimensions[1].height = 25
+                    for cell in ws_client[3]:
+                        cell.font = Font(bold=True)
+                        cell.fill = gray_fill
+                        cell.alignment = Alignment(horizontal="center", vertical="center")
+                        cell.border = border
+                    for row in ws_client.iter_rows(min_row=4, max_row=ws_client.max_row):
+                        for cell in row:
+                            cell.border = border
+                            cell.alignment = Alignment(horizontal="center", vertical="center")
+                    if ws_client.max_row >= 4: apply_total_row(ws_client, 4, 8, 4, ws_client.max_row, 10)
+                    client_widths = {"A":12, "B":10, "C":8, "D":12, "E":12, "F":12, "G":14, "H":14, "I":10, "J":25}
+                    for col, w in client_widths.items(): ws_client.column_dimensions[col].width = w
+                    
+                    # Formatting Tab 3
+                    ws_eng = workbook["Engineer"]
+                    ws_eng["A1"] = "Timesheet Calculation (ENGINEER OT)"
+                    ws_eng["A1"].font = Font(size=14, bold=True)
+                    ws_eng["A1"].alignment = Alignment(horizontal="center", vertical="center")
+                    ws_eng.merge_cells("A1:I1")
+                    ws_eng.row_dimensions[1].height = 25
+                    for cell in ws_eng[3]:
+                        cell.font = Font(bold=True)
+                        cell.alignment = Alignment(horizontal="center", vertical="center")
+                        cell.border = border
+                        if cell.value in ["Travel OT", "OT"]: cell.fill = yellow_fill
+                        else: cell.fill = gray_fill
+                    for row in ws_eng.iter_rows(min_row=4, max_row=ws_eng.max_row):
+                        for cell in row:
+                            cell.border = border
+                            cell.alignment = Alignment(horizontal="center", vertical="center")
+                    if ws_eng.max_row >= 4: apply_total_row(ws_eng, 4, 8, 4, ws_eng.max_row, 9)
+                    eng_widths = {"A":12, "B":10, "C":8, "D":12, "E":12, "F":15, "G":12, "H":14, "I":25}
+                    for col, w in eng_widths.items(): ws_eng.column_dimensions[col].width = w
+                    
+                    final_output = io.BytesIO()
+                    workbook.save(final_output)
+                    final_output.seek(0)
+                    
+                    st.success("✅ Extraction Complete!")
+                    st.download_button(
+                        label="⬇️ Download Processed Timesheet",
+                        data=final_output,
+                        file_name=f"Timesheet_{canonical_engineer}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                     
-                    pil_page = page_images[0]
-                    image = prepare_page(pil_page)
-                    h, w = image.shape[:2]
-                    
-                    x_bounds = detect_vertical_lines(image)
-                    date_rows = detect_date_rows(image, x_bounds[1], x_bounds[2])
-                    row_bounds = create_row_boundaries(date_rows, detect_horizontal_lines(image), h)
-                    
-                    for row_idx in range(len(date_rows)):
-                        extracted = extract_row(image, x_bounds, row_bounds[row_idx], row_bounds[row_idx+1])
-                        if extracted:
-                            raw_rows.append(extracted)
-                            if extracted["Engineer Name"]: engineer_names.append(extracted["Engineer Name"])
-                            
-                    progress_bar.progress(page_num / total_pages)
-                    
-                    # Aggressively wipe memory before the next page loads
-                    del page_images
-                    del pil_page
-                    del image
-                    gc.collect()
-                # -----------------------------
+                except Exception as e:
+                    st.error(f"An error occurred: {str(e)}")
+
+# ------------------------------------------------------------
+# TAB 2: INVOICE GENERATION
+# ------------------------------------------------------------
+with tab2:
+    st.header("🧾 Final Invoice Generation")
+    st.write("Fill in the customer details and generate the final invoice template.")
+    
+    st.markdown("### 1. Upload Required Files")
+    col1, col2 = st.columns(2)
+    with col1:
+        timesheet_excel = st.file_uploader("Upload Processed Timesheet (Excel)", type=["xlsx"], key="ts_upload")
+    with col2:
+        template_excel = st.file_uploader("Upload Blank Invoice Template (Excel)", type=["xlsx"], key="inv_upload")
+        
+    st.markdown("### 2. Enter Customer Information")
+    c1, c2 = st.columns(2)
+    with c1:
+        cust_name = st.text_input("Customer name")
+        inv_address = st.text_input("Invoicing address")
+        del_address = st.text_input("Delivery address")
+        reference = st.text_input("Reference")
+        cust_po = st.text_input("Customer PO")
+    with c2:
+        proj_no = st.text_input("Project No")
+        svc_type = st.text_input("Service Type")
+        vessel_name = st.text_input("Vessel Name")
+        vessel_no = st.text_input("Vessel No (if applicable)")
+        
+    st.markdown("### 3. Select Engineer Role")
+    position = st.selectbox("Assign Hours to Position:", [
+        "Service Technician", 
+        "Service Engineer", 
+        "Senior Service Engineer", 
+        "Specialist Service Engineer"
+    ])
+    
+    if st.button("Generate Final Invoice", type="primary"):
+        if not timesheet_excel or not template_excel:
+            st.error("⚠️ Please upload both the Processed Timesheet AND the Invoice Template first.")
+        else:
+            try:
+                # 1. Read Client Tab from Timesheet
+                client_df = pd.read_excel(timesheet_excel, sheet_name="Client", skiprows=2)
                 
-                if not raw_rows:
-                    st.error("No usable rows extracted. Please ensure the PDF scan is clear.")
+                # Sum the hours safely
+                travel_sum = pd.to_numeric(client_df['Travel'], errors='coerce').sum()
+                nt_sum = pd.to_numeric(client_df['NT'], errors='coerce').sum()
+                ot_sum = pd.to_numeric(client_df['OT'], errors='coerce').sum()
+                waiting_sum = pd.to_numeric(client_df['Waiting time'], errors='coerce').sum()
+                prep_sum = pd.to_numeric(client_df['Preparation'], errors='coerce').sum()
+                
+                # 2. Open Invoice Template
+                wb = load_workbook(template_excel)
+                if "SG" not in wb.sheetnames:
+                    st.error("⚠️ The uploaded template does not contain an 'SG' tab.")
                     st.stop()
+                    
+                ws = wb["SG"]
                 
-                canonical_engineer = choose_engineer_name(engineer_names)
-                for r in raw_rows: r["Engineer Name"] = canonical_engineer
+                # 3. Write Customer Info
+                ws["C7"] = cust_name
+                ws["C8"] = inv_address
+                ws["C9"] = del_address
+                ws["C10"] = reference
+                ws["C11"] = cust_po
+                ws["C12"] = proj_no
+                ws["C13"] = svc_type
+                ws["C14"] = vessel_name
+                ws["C15"] = vessel_no
                 
-                aggregated = {}
-                for r in raw_rows:
-                    key = (r["Engineer Name"], r["Date"])
-                    if key not in aggregated: aggregated[key] = empty_final_row(key[0], key[1])
-                    add_hours(aggregated[key], r["Category"], r["Regular Hours"], r["OT Hours"])
+                # 4. Map Hours to Position Rows
+                r_offset = 20  # Default to Service Technician
+                if position == "Service Engineer":
+                    r_offset = 30
+                elif position == "Senior Service Engineer":
+                    r_offset = 40
+                elif position == "Specialist Service Engineer":
+                    r_offset = 50
+                    
+                ws[f"D{r_offset + 1}"] = travel_sum if travel_sum > 0 else ""
+                ws[f"D{r_offset + 2}"] = nt_sum if nt_sum > 0 else ""
+                ws[f"D{r_offset + 3}"] = ot_sum if ot_sum > 0 else ""
+                ws[f"D{r_offset + 4}"] = waiting_sum if waiting_sum > 0 else ""
+                ws[f"D{r_offset + 5}"] = prep_sum if prep_sum > 0 else ""
                 
-                # --- Build DataFrames ---
-                final_df = pd.DataFrame(list(aggregated.values()))
-                for col in FINAL_COLUMNS:
-                    if col not in final_df.columns: final_df[col] = "" if col in ["Engineer Name", "Date"] else 0.0
-                final_df = final_df[FINAL_COLUMNS]
+                # 5. Save and Export
+                invoice_output = io.BytesIO()
+                wb.save(invoice_output)
+                invoice_output.seek(0)
                 
-                final_df["_actual_date"] = final_df["Date"].apply(parse_date)
-                final_df = final_df.sort_values(by=["_actual_date", "Engineer Name"]).reset_index(drop=True)
-                for col in FINAL_COLUMNS[2:]:
-                    final_df[col] = pd.to_numeric(final_df[col], errors="coerce").fillna(0).round(2)
-                
-                min_date = final_df["_actual_date"].min()
-                max_date = final_df["_actual_date"].max()
-                full_date_range = pd.date_range(start=min_date, end=max_date, freq='D')
-                dates_df = pd.DataFrame({"_actual_date": full_date_range})
-                dates_df["Date"] = dates_df["_actual_date"].dt.strftime("%d.%m.%Y")
-                dates_df["Date_formatted"] = dates_df["_actual_date"].dt.strftime("%d-%b")
-                dates_df["Day"] = dates_df["_actual_date"].dt.strftime("%a")
-                
-                temp_df = pd.merge(dates_df, final_df.drop(columns=["_actual_date", "Engineer Name"], errors="ignore"), on="Date", how="left")
-                for col in FINAL_COLUMNS[2:]:
-                    temp_df[col] = temp_df[col].fillna(0.0)
-                
-                client_df = pd.DataFrame({
-                    "Date": temp_df["Date_formatted"], "Day": temp_df["Day"], "PH": "",
-                    "Travel": temp_df["Travel Time"] + temp_df["Travel OT Time"], "NT": temp_df["Working Time"], "OT": temp_df["Working OT Time"],
-                    "Waiting time": temp_df["Waiting Time"] + temp_df["Waiting OT Time"], "Preparation": temp_df["Preparation Time"] + temp_df["Preparation OT Time"],
-                    "L.Trpt": "", "Remark": ""
-                })
-                
-                engineer_df = pd.DataFrame({
-                    "Date": temp_df["Date_formatted"], "Day": temp_df["Day"], "PH": "",
-                    "Travel": temp_df["Travel Time"], "Travel OT": temp_df["Travel OT Time"], "Normal Time": temp_df["Working Time"],
-                    "OT": temp_df["Working OT Time"], "Preparation": temp_df["Preparation Time"] + temp_df["Preparation OT Time"], "Remark": ""
-                })
-                
-                for df in [client_df, engineer_df]:
-                    for col in df.columns:
-                        if df[col].dtype == 'float64': df[col] = df[col].replace(0.0, "")
-                
-                final_df = final_df.drop(columns=["_actual_date"])
-                
-                # --- Excel Generation in Memory ---
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                    final_df.to_excel(writer, sheet_name="Detailed Timesheet", index=False)
-                    client_df.to_excel(writer, sheet_name="Client", index=False, startrow=2)
-                    engineer_df.to_excel(writer, sheet_name="Engineer", index=False, startrow=2)
-                
-                output.seek(0)
-                workbook = load_workbook(output)
-                border = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
-                gray_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
-                yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
-                
-                # Tab 1
-                ws_raw = workbook["Detailed Timesheet"]
-                for cell in ws_raw[1]:
-                    cell.font = Font(bold=True)
-                    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-                ws_raw.row_dimensions[1].height = 45
-                ws_raw.freeze_panes = "C2"
-                for row in ws_raw.iter_rows(max_row=ws_raw.max_row):
-                    for cell in row:
-                        cell.border = border
-                        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-                        if cell.column >= 3 and cell.row > 1 and isinstance(cell.value, (int, float)): cell.number_format = "0.00"
-                if ws_raw.max_row >= 2: apply_total_row(ws_raw, 3, 18, 2, ws_raw.max_row, 18)
-                widths = {"A":24, "B":14, "C":16, "D":18, "E":16, "F":18, "G":16, "H":18, "I":20, "J":22, "K":20, "L":22, "M":17, "N":19, "O":17, "P":19, "Q":15, "R":17}
-                for col, width in widths.items(): ws_raw.column_dimensions[col].width = width
-                
-                # Tab 2
-                ws_client = workbook["Client"]
-                ws_client["A1"] = "Timesheet Calculation (Singapore)"
-                ws_client["A1"].font = Font(size=14, bold=True)
-                ws_client["A1"].alignment = Alignment(horizontal="center", vertical="center")
-                ws_client.merge_cells("A1:J1")
-                ws_client.row_dimensions[1].height = 25
-                for cell in ws_client[3]:
-                    cell.font = Font(bold=True)
-                    cell.fill = gray_fill
-                    cell.alignment = Alignment(horizontal="center", vertical="center")
-                    cell.border = border
-                for row in ws_client.iter_rows(min_row=4, max_row=ws_client.max_row):
-                    for cell in row:
-                        cell.border = border
-                        cell.alignment = Alignment(horizontal="center", vertical="center")
-                if ws_client.max_row >= 4: apply_total_row(ws_client, 4, 8, 4, ws_client.max_row, 10)
-                client_widths = {"A":12, "B":10, "C":8, "D":12, "E":12, "F":12, "G":14, "H":14, "I":10, "J":25}
-                for col, w in client_widths.items(): ws_client.column_dimensions[col].width = w
-                
-                # Tab 3
-                ws_eng = workbook["Engineer"]
-                ws_eng["A1"] = "Timesheet Calculation (ENGINEER OT)"
-                ws_eng["A1"].font = Font(size=14, bold=True)
-                ws_eng["A1"].alignment = Alignment(horizontal="center", vertical="center")
-                ws_eng.merge_cells("A1:I1")
-                ws_eng.row_dimensions[1].height = 25
-                for cell in ws_eng[3]:
-                    cell.font = Font(bold=True)
-                    cell.alignment = Alignment(horizontal="center", vertical="center")
-                    cell.border = border
-                    if cell.value in ["Travel OT", "OT"]: cell.fill = yellow_fill
-                    else: cell.fill = gray_fill
-                for row in ws_eng.iter_rows(min_row=4, max_row=ws_eng.max_row):
-                    for cell in row:
-                        cell.border = border
-                        cell.alignment = Alignment(horizontal="center", vertical="center")
-                if ws_eng.max_row >= 4: apply_total_row(ws_eng, 4, 8, 4, ws_eng.max_row, 9)
-                eng_widths = {"A":12, "B":10, "C":8, "D":12, "E":12, "F":15, "G":12, "H":14, "I":25}
-                for col, w in eng_widths.items(): ws_eng.column_dimensions[col].width = w
-                
-                final_output = io.BytesIO()
-                workbook.save(final_output)
-                final_output.seek(0)
-                
-                st.success("Extraction Completed.")
+                st.success("✅ Invoice Generated Successfully!")
                 st.download_button(
-                    label="Download Excel Timesheet",
-                    data=final_output,
-                    file_name=f"Timesheet_Processed_{canonical_engineer}.xlsx",
+                    label="⬇️ Download Final Invoice",
+                    data=invoice_output,
+                    file_name=f"Invoice_{cust_name or 'Completed'}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
-                
             except Exception as e:
-                st.error(f"An error occurred: {str(e)}")
+                st.error(f"An error occurred while processing the invoice: {str(e)}")
