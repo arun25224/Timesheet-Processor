@@ -112,7 +112,7 @@ def classify_activity(work_code, description):
     return "Other"
 
 # ============================================================
-# OCR & EXTRACTION FUNCTIONS (Gentle Processing)
+# OCR & EXTRACTION FUNCTIONS
 # ============================================================
 def prepare_page(pil_image):
     img = np.array(pil_image)
@@ -631,8 +631,8 @@ with tab2:
                     ws.cell(row=expense_row + 2, column=3).value = engineer_name_invoice
                     
                 if local_transport_row and l_trpt_sum > 0:
-                    # Insert the L.Trpt sum into the "Quantity" column (Column 4 / D)
-                    ws.cell(row=local_transport_row, column=4).value = l_trpt_sum
+                    # Insert the L.Trpt sum into the "Unit" column (Column 5 / E)
+                    ws.cell(row=local_transport_row, column=5).value = l_trpt_sum
                 
                 # 6. Save and Export
                 invoice_output = io.BytesIO()
