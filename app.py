@@ -333,7 +333,7 @@ def apply_total_row(ws, sum_min_col, sum_max_col, start_row, end_row, table_max_
 # ============================================================
 st.title("📄 Timesheet & Invoice Automation")
 
-tab1, tab2 = st.tabs(["📄 Step 1: Timesheet Extraction", "🧾 Step 2: Invoice Generation"])
+tab1, tab2 = st.tabs(["Timesheet Extraction", "Invoice Generation"])
 
 # ------------------------------------------------------------
 # TAB 1: TIMESHEET OCR
