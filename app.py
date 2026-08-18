@@ -112,7 +112,7 @@ def classify_activity(work_code, description):
     return "Other"
 
 # ============================================================
-# OCR & EXTRACTION FUNCTIONS (Gentle Processing)
+# OCR & EXTRACTION FUNCTIONS
 # ============================================================
 def prepare_page(pil_image):
     img = np.array(pil_image)
@@ -333,10 +333,10 @@ def apply_total_row(ws, sum_min_col, sum_max_col, start_row, end_row, table_max_
 # ============================================================
 st.title("Timesheet & Invoice Automation")
 
-tab1, tab2 = st.tabs(["Step 1: Timesheet Extraction", "Step 2: Invoice Generation"])
+tab1, tab2 = st.tabs(["Timesheet Extraction", "Invoice Generation"])
 
 # ------------------------------------------------------------
-# TAB 1: TIMESHEET OCR
+# TIMESHEET OCR
 # ------------------------------------------------------------
 with tab1:
     st.header("Automated Timesheet Processor")
@@ -526,11 +526,11 @@ with tab1:
                     st.error(f"An error occurred: {str(e)}")
 
 # ------------------------------------------------------------
-# TAB 2: INVOICE GENERATION
+# INVOICE GENERATION
 # ------------------------------------------------------------
 with tab2:
     st.header("Final Invoice Generation")
-    st.write("Fill in the customer details and generate the final invoice template.")
+    st.write("Fill in the details and generate the final invoice.")
     
     st.markdown("### 1. Upload Required Files")
     col1, col2 = st.columns(2)
@@ -552,7 +552,7 @@ with tab2:
         svc_type = st.text_input("Service Type")
         vessel_name = st.text_input("Vessel Name")
         vessel_no = st.text_input("Vessel No (if applicable)")
-        engineer_name_invoice = st.text_input("Engineer Name (For Expenses)")
+        engineer_name_invoice = st.text_input("Engineer Name")
         
     st.markdown("### 3. Select Engineer Role")
     position = st.selectbox("Assign Hours to Position:", [
