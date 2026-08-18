@@ -331,7 +331,7 @@ def apply_total_row(ws, sum_min_col, sum_max_col, start_row, end_row, table_max_
 # ============================================================
 # STREAMLIT UI & TABS
 # ============================================================
-st.title("📄 Timesheet & Invoice Automation")
+st.title("Timesheet & Invoice Automation")
 
 tab1, tab2 = st.tabs(["Timesheet Extraction", "Invoice Generation"])
 
