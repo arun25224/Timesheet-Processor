@@ -333,7 +333,7 @@ def apply_total_row(ws, sum_min_col, sum_max_col, start_row, end_row, table_max_
 # ============================================================
 st.title("Timesheet & Invoice Automation")
 
-tab1, tab2 = st.tabs(["Timesheet Extraction", "Invoice Generation"])
+tab1, tab2 = st.tabs(["Step 1: Timesheet Extraction", "Step 2: Invoice Generation"])
 
 # ------------------------------------------------------------
 # TAB 1: TIMESHEET OCR
@@ -375,7 +375,6 @@ with tab1:
                                 
                         progress_bar.progress(page_num / total_pages)
                         
-                        # Aggressively wipe memory before the next page loads
                         del page_images, pil_page, image
                         gc.collect()
                     
@@ -414,12 +413,25 @@ with tab1:
                     temp_df = pd.merge(dates_df, final_df.drop(columns=["_actual_date", "Engineer Name"], errors="ignore"), on="Date", how="left")
                     for col in FINAL_COLUMNS[2:]:
                         temp_df[col] = temp_df[col].fillna(0.0)
+                        
+                    # L.Trpt Logic: 1 if waiting time is 0 and work was performed, else ""
+                    wait_times = temp_df["Waiting Time"] + temp_df["Waiting OT Time"]
+                    l_trpt_vals = []
+                    for i in range(len(temp_df)):
+                        w = wait_times[i]
+                        activity_sum = (temp_df.loc[i, "Travel Time"] + temp_df.loc[i, "Travel OT Time"] + 
+                                        temp_df.loc[i, "Working Time"] + temp_df.loc[i, "Working OT Time"] + 
+                                        temp_df.loc[i, "Preparation Time"] + temp_df.loc[i, "Preparation OT Time"] + w)
+                        if activity_sum > 0 and (w == 0 or pd.isna(w)):
+                            l_trpt_vals.append(1)
+                        else:
+                            l_trpt_vals.append("")
                     
                     client_df = pd.DataFrame({
                         "Date": temp_df["Date_formatted"], "Day": temp_df["Day"], "PH": "",
                         "Travel": temp_df["Travel Time"] + temp_df["Travel OT Time"], "NT": temp_df["Working Time"], "OT": temp_df["Working OT Time"],
-                        "Waiting time": temp_df["Waiting Time"] + temp_df["Waiting OT Time"], "Preparation": temp_df["Preparation Time"] + temp_df["Preparation OT Time"],
-                        "L.Trpt": "", "Remark": ""
+                        "Waiting time": wait_times, "Preparation": temp_df["Preparation Time"] + temp_df["Preparation OT Time"],
+                        "L.Trpt": l_trpt_vals, "Remark": ""
                     })
                     
                     engineer_df = pd.DataFrame({
@@ -463,7 +475,7 @@ with tab1:
                     widths = {"A":24, "B":14, "C":16, "D":18, "E":16, "F":18, "G":16, "H":18, "I":20, "J":22, "K":20, "L":22, "M":17, "N":19, "O":17, "P":19, "Q":15, "R":17}
                     for col, width in widths.items(): ws_raw.column_dimensions[col].width = width
                     
-                    # Formatting Tab 2
+                    # Formatting Tab 2 (Client) - Sum columns D through I (4 to 9)
                     ws_client = workbook["Client"]
                     ws_client["A1"] = "Timesheet Calculation (Singapore)"
                     ws_client["A1"].font = Font(size=14, bold=True)
@@ -479,7 +491,7 @@ with tab1:
                         for cell in row:
                             cell.border = border
                             cell.alignment = Alignment(horizontal="center", vertical="center")
-                    if ws_client.max_row >= 4: apply_total_row(ws_client, 4, 8, 4, ws_client.max_row, 10)
+                    if ws_client.max_row >= 4: apply_total_row(ws_client, 4, 9, 4, ws_client.max_row, 10)
                     client_widths = {"A":12, "B":10, "C":8, "D":12, "E":12, "F":12, "G":14, "H":14, "I":10, "J":25}
                     for col, w in client_widths.items(): ws_client.column_dimensions[col].width = w
                     
@@ -508,9 +520,9 @@ with tab1:
                     workbook.save(final_output)
                     final_output.seek(0)
                     
-                    st.success("✅ Extraction Complete!")
+                    st.success("Extraction Complete!")
                     st.download_button(
-                        label="⬇️ Download Processed Timesheet",
+                        label="Download Processed Timesheet",
                         data=final_output,
                         file_name=f"Timesheet_{canonical_engineer}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -533,7 +545,7 @@ with tab2:
     with col2:
         template_excel = st.file_uploader("Upload Blank Invoice Template (Excel)", type=["xlsx"], key="inv_upload")
         
-    st.markdown("### 2. Enter Customer Information")
+    st.markdown("### 2. Enter Information")
     c1, c2 = st.columns(2)
     with c1:
         cust_name = st.text_input("Customer name")
@@ -546,6 +558,7 @@ with tab2:
         svc_type = st.text_input("Service Type")
         vessel_name = st.text_input("Vessel Name")
         vessel_no = st.text_input("Vessel No (if applicable)")
+        engineer_name_invoice = st.text_input("Engineer Name (For Expenses)")
         
     st.markdown("### 3. Select Engineer Role")
     position = st.selectbox("Assign Hours to Position:", [
@@ -560,17 +573,14 @@ with tab2:
             st.error("Please upload both the Processed Timesheet AND the Invoice Template first.")
         else:
             try:
-                # 1. Read Client Tab from Timesheet
                 client_df = pd.read_excel(timesheet_excel, sheet_name="Client", skiprows=2)
                 
-                # Sum the hours safely
                 travel_sum = pd.to_numeric(client_df['Travel'], errors='coerce').sum()
                 nt_sum = pd.to_numeric(client_df['NT'], errors='coerce').sum()
                 ot_sum = pd.to_numeric(client_df['OT'], errors='coerce').sum()
                 waiting_sum = pd.to_numeric(client_df['Waiting time'], errors='coerce').sum()
                 prep_sum = pd.to_numeric(client_df['Preparation'], errors='coerce').sum()
                 
-                # 2. Open Invoice Template
                 wb = load_workbook(template_excel)
                 if "SG" not in wb.sheetnames:
                     st.error("The uploaded template does not contain an 'SG' tab.")
@@ -578,7 +588,6 @@ with tab2:
                     
                 ws = wb["SG"]
                 
-                # 3. Write Customer Info
                 ws["C7"] = cust_name
                 ws["C8"] = inv_address
                 ws["C9"] = del_address
@@ -589,8 +598,7 @@ with tab2:
                 ws["C14"] = vessel_name
                 ws["C15"] = vessel_no
                 
-                # 4. Map Hours to Position Rows
-                r_offset = 20  # Default to Service Technician
+                r_offset = 20
                 if position == "Service Engineer":
                     r_offset = 30
                 elif position == "Senior Service Engineer":
@@ -604,7 +612,16 @@ with tab2:
                 ws[f"D{r_offset + 4}"] = waiting_sum if waiting_sum > 0 else ""
                 ws[f"D{r_offset + 5}"] = prep_sum if prep_sum > 0 else ""
                 
-                # 5. Save and Export
+                expense_row = None
+                for row_idx in range(1, 150):
+                    cell_val = ws.cell(row=row_idx, column=2).value
+                    if cell_val and str(cell_val).strip() == "Expenses":
+                        expense_row = row_idx
+                        break
+                        
+                if expense_row:
+                    ws.cell(row=expense_row + 2, column=3).value = engineer_name_invoice
+                
                 invoice_output = io.BytesIO()
                 wb.save(invoice_output)
                 invoice_output.seek(0)
