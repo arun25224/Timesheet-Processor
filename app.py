@@ -112,7 +112,7 @@ def classify_activity(work_code, description):
     return "Other"
 
 # ============================================================
-# OCR & EXTRACTION FUNCTIONS (Reverted to Gentle Processing)
+# OCR & EXTRACTION FUNCTIONS (Gentle Processing)
 # ============================================================
 def prepare_page(pil_image):
     img = np.array(pil_image)
@@ -567,6 +567,7 @@ with tab2:
             st.error("Please upload both the Processed Timesheet AND the Invoice Template first.")
         else:
             try:
+                # 1. Read Client Tab from Timesheet
                 client_df = pd.read_excel(timesheet_excel, sheet_name="Client", skiprows=2)
                 
                 travel_sum = pd.to_numeric(client_df['Travel'], errors='coerce').sum()
@@ -575,6 +576,10 @@ with tab2:
                 waiting_sum = pd.to_numeric(client_df['Waiting time'], errors='coerce').sum()
                 prep_sum = pd.to_numeric(client_df['Preparation'], errors='coerce').sum()
                 
+                # Retrieve the L.Trpt sum
+                l_trpt_sum = pd.to_numeric(client_df['L.Trpt'], errors='coerce').sum()
+                
+                # 2. Open Invoice Template
                 wb = load_workbook(template_excel)
                 if "SG" not in wb.sheetnames:
                     st.error("The uploaded template does not contain an 'SG' tab.")
@@ -582,6 +587,7 @@ with tab2:
                     
                 ws = wb["SG"]
                 
+                # 3. Fill Customer Details
                 ws["C7"] = cust_name
                 ws["C8"] = inv_address
                 ws["C9"] = del_address
@@ -592,6 +598,7 @@ with tab2:
                 ws["C14"] = vessel_name
                 ws["C15"] = vessel_no
                 
+                # 4. Input Working Hours
                 r_offset = 20
                 if position == "Service Engineer":
                     r_offset = 30
@@ -606,16 +613,28 @@ with tab2:
                 ws[f"D{r_offset + 4}"] = waiting_sum if waiting_sum > 0 else ""
                 ws[f"D{r_offset + 5}"] = prep_sum if prep_sum > 0 else ""
                 
+                # 5. Handle Expenses & Local Transport
                 expense_row = None
+                local_transport_row = None
+                
                 for row_idx in range(1, 150):
-                    cell_val = ws.cell(row=row_idx, column=2).value
-                    if cell_val and str(cell_val).strip() == "Expenses":
+                    col_b_val = ws.cell(row=row_idx, column=2).value
+                    col_c_val = ws.cell(row=row_idx, column=3).value
+                    
+                    if col_b_val and str(col_b_val).strip() == "Expenses":
                         expense_row = row_idx
-                        break
+                        
+                    if col_c_val and "local transport" in str(col_c_val).lower():
+                        local_transport_row = row_idx
                         
                 if expense_row:
                     ws.cell(row=expense_row + 2, column=3).value = engineer_name_invoice
+                    
+                if local_transport_row and l_trpt_sum > 0:
+                    # Insert the L.Trpt sum into the "Quantity" column (Column 4 / D)
+                    ws.cell(row=local_transport_row, column=4).value = l_trpt_sum
                 
+                # 6. Save and Export
                 invoice_output = io.BytesIO()
                 wb.save(invoice_output)
                 invoice_output.seek(0)
