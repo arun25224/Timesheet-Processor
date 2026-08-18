@@ -57,14 +57,11 @@ def format_date(value):
 
 def normalise_time(value):
     if not value: return ""
-    text = clean_text(value).upper().replace("O", "0").replace("I", "1").replace("L", "1").replace(".", ":").replace(";", ":")
-    text = re.sub(r"[^0-9:]", "", text)
-    
+    text = clean_text(value).replace("O", "0").replace("o", "0").replace("I", "1").replace("l", "1").replace(".", ":")
     match = re.search(r"\b([0-2]?\d):([0-5]\d)\b", text)
     if match:
         h, m = int(match.group(1)), int(match.group(2))
         if 0 <= h <= 23 and 0 <= m <= 59: return f"{h:02d}:{m:02d}"
-        
     match = re.search(r"\b([0-2]\d)([0-5]\d)\b", text)
     if match:
         h, m = int(match.group(1)), int(match.group(2))
@@ -115,18 +112,15 @@ def classify_activity(work_code, description):
     return "Other"
 
 # ============================================================
-# HIGH-ACCURACY OCR & EXTRACTION FUNCTIONS
+# OCR & EXTRACTION FUNCTIONS (Reverted to Gentle Processing)
 # ============================================================
 def prepare_page(pil_image):
     img = np.array(pil_image)
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY) if len(img.shape) == 3 else img
-    
-    # Advanced Preprocessing for cleaner lines
-    gray = cv2.resize(gray, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
-    gray = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
-    return gray
+    gray = cv2.resize(gray, None, fx=1.10, fy=1.10, interpolation=cv2.INTER_CUBIC)
+    return cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
 
-def cluster_values(values, tolerance=8):
+def cluster_values(values, tolerance=5):
     if not values: return []
     values = sorted([int(v) for v in values])
     clusters, current = [], [values[0]]
@@ -140,76 +134,54 @@ def cluster_values(values, tolerance=8):
 
 def detect_vertical_lines(image):
     height, width = image.shape[:2]
-    edges = cv2.Canny(image, 50, 150, apertureSize=3)
-    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, max(50, int(height * 0.05)), minLineLength=max(100, int(height * 0.40)), maxLineGap=30)
+    edges = cv2.Canny(image, 40, 150, apertureSize=3)
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, max(50, int(height * 0.03)), minLineLength=max(100, int(height * 0.30)), maxLineGap=30)
     candidates = []
     if lines is not None:
-        lines = np.asarray(lines).reshape(-1, 4)
-        for x1, y1, x2, y2 in lines:
-            if abs(x2 - x1) <= 5 and abs(y2 - y1) >= height * 0.40:
-                candidates.append(int(round((x1 + x2) / 2)))
-    candidates = cluster_values(candidates, tolerance=15)
-    
+        lines = np.asarray(lines)
+        if lines.ndim == 3: lines = lines[:, 0, :] 
+        for line in lines:
+            if len(line) == 4:
+                x1, y1, x2, y2 = map(int, line)
+                if abs(x2 - x1) <= 5 and abs(y2 - y1) >= height * 0.30:
+                    candidates.append(int(round((x1 + x2) / 2)))
+    candidates = cluster_values(candidates, tolerance=8)
+    filtered = []
+    min_space = max(20, int(width * 0.01))
+    for x in candidates:
+        if not filtered or x - filtered[-1] >= min_space: filtered.append(x)
     expected_ratios = [0.000, 0.043, 0.205, 0.325, 0.445, 0.610, 0.772, 0.934, 1.000]
-    if len(candidates) >= 2:
-        left, right = candidates[0], candidates[-1]
-    else:
-        left, right = int(width * 0.015), int(width * 0.985)
+    if len(filtered) == 9: return filtered
+    left = filtered[0] if len(filtered) >= 2 else int(width * 0.015)
+    right = filtered[-1] if len(filtered) >= 2 else int(width * 0.985)
     return [int(round(left + r * (right - left))) for r in expected_ratios]
 
 def detect_horizontal_lines(image):
     height, width = image.shape[:2]
-    edges = cv2.Canny(image, 50, 150, apertureSize=3)
+    edges = cv2.Canny(image, 40, 150, apertureSize=3)
     lines = cv2.HoughLinesP(edges, 1, np.pi / 180, max(40, int(width * 0.05)), minLineLength=max(100, int(width * 0.15)), maxLineGap=30)
     candidates = []
     if lines is not None:
-        lines = np.asarray(lines).reshape(-1, 4)
-        for x1, y1, x2, y2 in lines:
-            if abs(y2 - y1) <= 5 and abs(x2 - x1) >= width * 0.15:
-                candidates.append(int(round((y1 + y2) / 2)))
-    return cluster_values(candidates, tolerance=10)
+        lines = np.asarray(lines)
+        if lines.ndim == 3: lines = lines[:, 0, :]
+        for line in lines:
+            if len(line) == 4:
+                x1, y1, x2, y2 = map(int, line)
+                if abs(y2 - y1) <= 5 and abs(x2 - x1) >= width * 0.15:
+                    candidates.append(int(round((y1 + y2) / 2)))
+    return cluster_values(candidates, tolerance=6)
 
-def prepare_cell(crop):
+def prepare_date_crop(crop):
     if crop is None or crop.shape[0] < 5 or crop.shape[1] < 5: return None
-    h, w = crop.shape[:2]
-    
-    # Aggressive padding to avoid reading borders
-    pad_y, pad_x = max(3, int(h * 0.10)), max(3, int(w * 0.05))
-    if h - 2 * pad_y < 5 or w - 2 * pad_x < 5: return None
-    crop = crop[pad_y:h-pad_y, pad_x:w-pad_x]
-    
-    crop = cv2.resize(crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-    return cv2.copyMakeBorder(crop, 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=[255, 255, 255])
-
-def ocr_cell(crop, cell_type):
-    prepared = prepare_cell(crop)
-    if prepared is None: return ""
-    
-    configs = {
-        "date": ["--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789./-", "--oem 3 --psm 6"],
-        "time": ["--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789:.", "--oem 3 --psm 6"],
-        "number": ["--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789."],
-    }.get(cell_type, ["--oem 3 --psm 6", "--oem 3 --psm 4"])
-    
-    results = []
-    for config in configs:
-        try:
-            text = clean_text(pytesseract.image_to_string(prepared, config=config))
-            if text: results.append(text)
-        except: pass
-        
-    if not results: return ""
-    return results[0] if cell_type in ["date", "time", "number"] else max(results, key=len)
+    crop = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+    return cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(crop)
 
 def detect_date_rows(image, x_left, x_right):
     top, bottom = int(image.shape[0] * 0.03), int(image.shape[0] * 0.98)
-    crop = image[top:bottom, x_left:x_right]
-    if crop is None or crop.shape[0] < 5 or crop.shape[1] < 5: return []
-    
-    processed = cv2.resize(crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-    
+    processed = prepare_date_crop(image[top:bottom, x_left:x_right])
+    if processed is None: return []
     results = []
-    configs = ["--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789./-", "--oem 3 --psm 11"]
+    configs = ["--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789./-", "--oem 3 --psm 11 -c tessedit_char_whitelist=0123456789./-"]
     for config in configs:
         try:
             data = pytesseract.image_to_data(processed, config=config, output_type=Output.DATAFRAME)
@@ -218,13 +190,12 @@ def detect_date_rows(image, x_left, x_right):
                     text = clean_text(item["text"])
                     parsed = parse_date(text)
                     if parsed:
-                        center_y = top + int(item["top"] / 3) + max(1, int(item["height"] / 3)) // 2
+                        center_y = top + int(item["top"] / 4) + max(1, int(item["height"] / 4)) // 2
                         results.append({"date": parsed, "date_text": format_date(text), "center_y": center_y, "confidence": float(item.get("conf", 0))})
         except: continue
-        
     unique = []
     for item in sorted(results, key=lambda x: x["center_y"]):
-        dup_idx = next((i for i, ex in enumerate(unique) if abs(item["center_y"] - ex["center_y"]) <= 15), None)
+        dup_idx = next((i for i, ex in enumerate(unique) if abs(item["center_y"] - ex["center_y"]) <= 12), None)
         if dup_idx is None: unique.append(item)
         elif item["confidence"] > unique[dup_idx]["confidence"]: unique[dup_idx] = item
     return sorted(unique, key=lambda x: x["center_y"])
@@ -234,21 +205,40 @@ def create_row_boundaries(date_rows, horizontal_lines, image_height):
     centers = [int(r["center_y"]) for r in date_rows]
     boundaries = []
     above = [y for y in horizontal_lines if y < centers[0]]
-    boundaries.append(max(above) if above else max(0, centers[0] - 40))
+    boundaries.append(max(above) if above else max(0, centers[0] - 30))
     for i in range(len(centers) - 1):
         midpoint = int(round((centers[i] + centers[i + 1]) / 2))
-        nearby = [y for y in horizontal_lines if abs(y - midpoint) <= 40]
+        nearby = [y for y in horizontal_lines if abs(y - midpoint) <= 35]
         boundaries.append(min(nearby, key=lambda y: abs(y - midpoint)) if nearby else midpoint)
     below = [y for y in horizontal_lines if y > centers[-1]]
-    boundaries.append(min(below) if below else min(image_height - 1, centers[-1] + 40))
-    
+    boundaries.append(min(below) if below else min(image_height - 1, centers[-1] + 30))
     cleaned = []
     for b in map(int, boundaries):
         if not cleaned or b > cleaned[-1] + 2: cleaned.append(b)
         else: cleaned[-1] = max(cleaned[-1], b)
     if len(cleaned) != len(date_rows) + 1:
-        cleaned = [max(0, centers[0] - 40)] + [int((centers[i] + centers[i+1])/2) for i in range(len(centers)-1)] + [min(image_height - 1, centers[-1] + 40)]
+        cleaned = [max(0, centers[0] - 30)] + [int((centers[i] + centers[i+1])/2) for i in range(len(centers)-1)] + [min(image_height - 1, centers[-1] + 30)]
     return cleaned
+
+def ocr_cell(crop, cell_type):
+    if crop is None or crop.shape[0] < 5 or crop.shape[1] < 5: return ""
+    pad_y, pad_x = max(2, int(crop.shape[0] * 0.08)), max(2, int(crop.shape[1] * 0.04))
+    if crop.shape[0] - 2*pad_y < 5 or crop.shape[1] - 2*pad_x < 5: return ""
+    prep = cv2.resize(crop[pad_y:-pad_y, pad_x:-pad_x], None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+    prep = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(prep)
+    configs = {
+        "date": ["--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789./-", "--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789./-"],
+        "time": ["--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789:.", "--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789:."],
+        "number": ["--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789."],
+    }.get(cell_type, ["--oem 3 --psm 7", "--oem 3 --psm 6"])
+    results = []
+    for config in configs:
+        try:
+            text = clean_text(pytesseract.image_to_string(prep, config=config))
+            if text: results.append(text)
+        except: pass
+    if not results: return ""
+    return results[0] if cell_type in ["date", "time", "number"] else max(results, key=len)
 
 def clean_engineer_name(value):
     val = clean_text(value)
@@ -341,7 +331,7 @@ def apply_total_row(ws, sum_min_col, sum_max_col, start_row, end_row, table_max_
 # ============================================================
 # STREAMLIT UI & TABS
 # ============================================================
-st.title("Timesheet and Invoice Automation")
+st.title("Timesheet & Invoice Automation")
 
 tab1, tab2 = st.tabs(["Step 1: Timesheet Extraction", "Step 2: Invoice Generation"])
 
