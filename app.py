@@ -13,26 +13,7 @@ from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
 import io
 import gc
-import logging
-
-from paddleocr import PaddleOCR
-
-# Suppress noisy PaddleOCR logs at the root logger level
-logging.getLogger("ppocr").setLevel(logging.ERROR)
-
-@st.cache_resource
-def load_ocr_model():
-    """Bulletproof OCR initialization that adapts to ANY PaddleOCR version."""
-    try:
-        # Attempt 1: Full arguments (older versions)
-        return PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
-    except Exception:
-        try:
-            # Attempt 2: Remove show_log (medium versions)
-            return PaddleOCR(use_angle_cls=True, lang='en')
-        except Exception:
-            # Attempt 3: Bare minimum (newest versions)
-            return PaddleOCR(lang='en')
+import pytesseract
 
 # ============================================================
 # SETTINGS & CONSTANTS
@@ -231,7 +212,7 @@ st.title("Timesheet and Invoice Automation")
 tab1, tab2 = st.tabs(["Step 1: Timesheet Extraction", "Step 2: Invoice Generation"])
 
 # ------------------------------------------------------------
-# TAB 1: TIMESHEET EXTRACTION
+# TAB 1: TIMESHEET EXTRACTION (TESSERACT)
 # ------------------------------------------------------------
 with tab1:
     st.header("Deep Learning Timesheet Processor")
@@ -243,7 +224,6 @@ with tab1:
         if st.button("Extract Data from PDF"):
             with st.spinner('Analyzing image and extracting data across all pages...'):
                 try:
-                    ocr = load_ocr_model()
                     pdf_bytes = uploaded_file.read()
                     pdf_info = pdfinfo_from_bytes(pdf_bytes)
                     total_pages = pdf_info["Pages"]
@@ -261,22 +241,31 @@ with tab1:
                         gray = prepare_page(pil_page)
                         h, w = gray.shape[:2]
                         
+                        # Detect grid lines using OpenCV
                         x_bounds = detect_vertical_lines(gray)
                         if len(x_bounds) < 8:
                             expected_ratios = [0.000, 0.043, 0.205, 0.325, 0.445, 0.610, 0.772, 0.934, 1.000]
                             x_bounds = [int(w * r) for r in expected_ratios]
                         
-                        ocr_results = ocr.ocr(img_rgb, cls=True)
+                        # OCR with Tesseract
+                        data = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT)
                         
                         text_boxes = []
-                        if ocr_results and ocr_results[0]:
-                            for line in ocr_results[0]:
-                                box, (text, conf) = line
-                                xs = [p[0] for p in box]
-                                ys = [p[1] for p in box]
-                                cx, cy = (sum(xs)/4)*1.1, (sum(ys)/4)*1.1
+                        n_boxes = len(data['text'])
+                        for i in range(n_boxes):
+                            conf = int(data['conf'][i])
+                            text = str(data['text'][i]).strip()
+                            # Filter out low confidence and empty strings
+                            if conf > 20 and text:
+                                left = data['left'][i]
+                                top = data['top'][i]
+                                width = data['width'][i]
+                                height = data['height'][i]
+                                cx = left + width / 2
+                                cy = top + height / 2
                                 text_boxes.append({"text": text, "cx": cx, "cy": cy})
                         
+                        # Group text into visual rows based on Y-coordinate
                         text_boxes.sort(key=lambda x: x["cy"])
                         visual_rows = []
                         current_row = []
@@ -288,6 +277,7 @@ with tab1:
                                 current_row = [tb]
                         if current_row: visual_rows.append(current_row)
                         
+                        # Map visual rows to the 8-column grid
                         for row_tbs in visual_rows:
                             cells_text = [""] * 8
                             for tb in row_tbs:
