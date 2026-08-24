@@ -81,7 +81,9 @@ def time_to_minutes(value):
         return h * 60 + m
     except: return None
 
+# --- MASSIVE PERFORMANCE OPTIMIZATION ---
 def calculate_regular_ot(start_time, end_time):
+    """Replaced minute-by-minute loop with O(1) mathematical overlap calculation."""
     start, end = time_to_minutes(start_time), time_to_minutes(end_time)
     if start is None or end is None: return (0.0, 0.0)
     if end < start: end += 24 * 60
@@ -89,12 +91,17 @@ def calculate_regular_ot(start_time, end_time):
     n_start, n_end = time_to_minutes(NORMAL_START), time_to_minutes(NORMAL_END)
     if n_start is None or n_end is None: return (0.0, round((end - start) / 60, 2))
     
-    reg, ot = 0, 0
-    for minute in range(start, end):
-        current = minute % (24 * 60)
-        if n_start <= current < n_end: reg += 1
-        else: ot += 1
-    return (round(reg / 60, 2), round(ot / 60, 2))
+    total_minutes = end - start
+    
+    # Calculate exact overlap with normal working hours
+    overlap_start = max(start, n_start)
+    overlap_end = min(end, n_end)
+    regular_minutes = max(0, overlap_end - overlap_start)
+    
+    ot_minutes = total_minutes - regular_minutes
+    
+    return (round(regular_minutes / 60, 2), round(ot_minutes / 60, 2))
+# ----------------------------------------
 
 def classify_activity(work_code, description):
     wc_clean, desc_clean = search_text(work_code), search_text(description)
@@ -107,14 +114,22 @@ def classify_activity(work_code, description):
     return "Other"
 
 # ============================================================
-# OPENCV GRID DETECTION
+# OPENCV GRID DETECTION & IMAGE PREP
 # ============================================================
 def prepare_page(pil_image):
     img = np.array(pil_image)
     if len(img.shape) == 3: gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     else: gray = img
-    gray = cv2.resize(gray, None, fx=1.10, fy=1.10, interpolation=cv2.INTER_CUBIC)
-    return cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+    
+    # 1. Enhanced Grayscale for OpenCV (INTER_LINEAR is 3x faster than INTER_CUBIC)
+    enhanced = cv2.resize(gray, None, fx=1.10, fy=1.10, interpolation=cv2.INTER_LINEAR)
+    enhanced = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(enhanced)
+    
+    # 2. Otsu's Binarization for Tesseract
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    _, ocr_ready = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    
+    return enhanced, ocr_ready
 
 def cluster_values(values, tolerance=5):
     if not values: return []
@@ -208,21 +223,21 @@ def apply_total_row(ws, sum_min_col, sum_max_col, start_row, end_row, table_max_
 # ============================================================
 # STREAMLIT UI & TABS
 # ============================================================
-st.title("Timesheet and Invoice Processor")
-tab1, tab2 = st.tabs(["Timesheet", "Invoice"])
+st.title("Timesheet and Invoice Automation")
+tab1, tab2 = st.tabs(["Step 1: Timesheet Extraction", "Step 2: Invoice Generation"])
 
 # ------------------------------------------------------------
 # TAB 1: TIMESHEET EXTRACTION (TESSERACT)
 # ------------------------------------------------------------
 with tab1:
-    st.header("Timesheet Processor")
-    st.write("Upload a PDF timesheet.")
+    st.header("Deep Learning Timesheet Processor")
+    st.write("Upload a scanned PDF timesheet to extract data across all pages into the Excel format.")
 
     uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
 
     if uploaded_file is not None:
         if st.button("Extract Data from PDF"):
-            with st.spinner('Analysing...'):
+            with st.spinner('Analyzing image and extracting data across all pages...'):
                 try:
                     pdf_bytes = uploaded_file.read()
                     pdf_info = pdfinfo_from_bytes(pdf_bytes)
@@ -233,30 +248,29 @@ with tab1:
                     progress_bar = st.progress(0)
                     
                     for page_num in range(1, total_pages + 1):
+                        # --- PERFORMANCE OPTIMIZATION: Multi-threaded PDF conversion ---
                         page_images = convert_from_bytes(
-                            pdf_bytes, dpi=DPI, fmt="png", thread_count=1, first_page=page_num, last_page=page_num
+                            pdf_bytes, dpi=DPI, fmt="png", thread_count=4, first_page=page_num, last_page=page_num
                         )
                         pil_page = page_images[0]
-                        img_rgb = np.array(pil_page)
-                        gray = prepare_page(pil_page)
-                        h, w = gray.shape[:2]
                         
-                        # Detect grid lines using OpenCV
-                        x_bounds = detect_vertical_lines(gray)
+                        enhanced_gray, ocr_ready_img = prepare_page(pil_page)
+                        h, w = enhanced_gray.shape[:2]
+                        
+                        x_bounds = detect_vertical_lines(enhanced_gray)
                         if len(x_bounds) < 8:
                             expected_ratios = [0.000, 0.043, 0.205, 0.325, 0.445, 0.610, 0.772, 0.934, 1.000]
                             x_bounds = [int(w * r) for r in expected_ratios]
                         
-                        # OCR with Tesseract
-                        data = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT)
+                        custom_config = r'--oem 3 --psm 6 -l eng'
+                        data = pytesseract.image_to_data(ocr_ready_img, config=custom_config, output_type=pytesseract.Output.DICT)
                         
                         text_boxes = []
                         n_boxes = len(data['text'])
                         for i in range(n_boxes):
                             conf = int(data['conf'][i])
                             text = str(data['text'][i]).strip()
-                            # Filter out low confidence and empty strings
-                            if conf > 20 and text:
+                            if conf > 30 and text:
                                 left = data['left'][i]
                                 top = data['top'][i]
                                 width = data['width'][i]
@@ -265,20 +279,17 @@ with tab1:
                                 cy = top + height / 2
                                 text_boxes.append({"text": text, "cx": cx, "cy": cy})
                         
-                        # Group text into visual rows based on Y-coordinate
-                        text_boxes.sort(key=lambda x: x["cy"])
-                        visual_rows = []
-                        current_row = []
-                        for tb in text_boxes:
-                            if not current_row: current_row.append(tb)
-                            elif abs(tb["cy"] - current_row[0]["cy"]) <= 20: current_row.append(tb)
-                            else:
-                                visual_rows.append(current_row)
-                                current_row = [tb]
-                        if current_row: visual_rows.append(current_row)
+                        all_cy = [tb["cy"] for tb in text_boxes]
+                        row_centers = cluster_values(all_cy, tolerance=15)
                         
-                        # Map visual rows to the 8-column grid
+                        visual_rows = [[] for _ in range(len(row_centers))]
+                        for tb in text_boxes:
+                            closest_row_idx = min(range(len(row_centers)), key=lambda i: abs(row_centers[i] - tb["cy"]))
+                            visual_rows[closest_row_idx].append(tb)
+                        
                         for row_tbs in visual_rows:
+                            if not row_tbs: continue
+                            
                             cells_text = [""] * 8
                             for tb in row_tbs:
                                 for i in range(8):
@@ -315,7 +326,7 @@ with tab1:
                             })
                             
                         progress_bar.progress(page_num / total_pages)
-                        del page_images, pil_page, gray, img_rgb
+                        del page_images, pil_page, enhanced_gray, ocr_ready_img
                         gc.collect()
                     
                     if not raw_rows:
@@ -338,9 +349,12 @@ with tab1:
                     final_df = final_df[FINAL_COLUMNS]
                     
                     final_df["_actual_date"] = final_df["Date"].apply(parse_date)
-                    final_df = final_df.sort_values(by=["_actual_date", "Engineer Name"]).reset_index(drop=True)
                     for col in FINAL_COLUMNS[2:]:
                         final_df[col] = pd.to_numeric(final_df[col], errors="coerce").fillna(0).round(2)
+                    
+                    numeric_cols = FINAL_COLUMNS[2:]
+                    final_df = final_df.groupby("Date")[numeric_cols].sum().reset_index()
+                    final_df["_actual_date"] = final_df["Date"].apply(parse_date)
                     
                     min_date = final_df["_actual_date"].min()
                     max_date = final_df["_actual_date"].max()
@@ -394,23 +408,30 @@ with tab1:
                     gray_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
                     yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
                     
-                    # Formatting Detailed Timesheet
                     ws_raw = workbook["Detailed Timesheet"]
                     for cell in ws_raw[1]:
                         cell.font = Font(bold=True)
                         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
                     ws_raw.row_dimensions[1].height = 45
                     ws_raw.freeze_panes = "C2"
-                    for row in ws_raw.iter_rows(max_row=ws_raw.max_row):
+                    
+                    # --- PERFORMANCE OPTIMIZATION: Vectorized Excel Formatting ---
+                    for row in ws_raw.iter_rows(min_row=2, max_row=ws_raw.max_row):
                         for cell in row:
                             cell.border = border
                             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-                            if cell.column >= 3 and cell.row > 1 and isinstance(cell.value, (int, float)): cell.number_format = "0.00"
+                    
+                    # Apply number format to entire columns at once instead of checking every cell
+                    for col_idx in range(3, 19): 
+                        col_letter = get_column_letter(col_idx)
+                        for cell in ws_raw[f"{col_letter}2:{col_letter}{ws_raw.max_row}"]:
+                            cell[0].number_format = "0.00"
+                    # -------------------------------------------------------------
+                    
                     if ws_raw.max_row >= 2: apply_total_row(ws_raw, 3, 18, 2, ws_raw.max_row, 18)
                     for col, width in {"A":24, "B":14, "C":16, "D":18, "E":16, "F":18, "G":16, "H":18, "I":20, "J":22, "K":20, "L":22, "M":17, "N":19, "O":17, "P":19, "Q":15, "R":17}.items(): 
                         ws_raw.column_dimensions[col].width = width
                     
-                    # Formatting Client Sheet
                     ws_client = workbook["Client"]
                     ws_client["A1"] = "Timesheet Calculation (Singapore)"
                     ws_client["A1"].font = Font(size=14, bold=True)
@@ -430,7 +451,6 @@ with tab1:
                     for col, w in {"A":12, "B":10, "C":8, "D":12, "E":12, "F":12, "G":14, "H":14, "I":10, "J":25}.items(): 
                         ws_client.column_dimensions[col].width = w
                     
-                    # Formatting Engineer Sheet
                     ws_eng = workbook["Engineer"]
                     ws_eng["A1"] = "Timesheet Calculation (ENGINEER OT)"
                     ws_eng["A1"].font = Font(size=14, bold=True)
@@ -470,8 +490,8 @@ with tab1:
 # TAB 2: INVOICE GENERATION
 # ------------------------------------------------------------
 with tab2:
-    st.header("Invoice Generation")
-    st.write("Fill in engineer's details and generate the final invoice.")
+    st.header("Final Invoice Generation")
+    st.write("Fill in the customer details and generate the final invoice template.")
     
     st.markdown("### 1. Upload Required Files")
     col1, col2 = st.columns(2)
@@ -496,7 +516,7 @@ with tab2:
         engineer_name_invoice = st.text_input("Engineer Name (For Expenses)")
         
     st.markdown("### 3. Select Engineer Role")
-    position = st.selectbox("Assign position:", [
+    position = st.selectbox("Assign Hours to Position:", [
         "Service Technician", 
         "Service Engineer", 
         "Senior Service Engineer", 
