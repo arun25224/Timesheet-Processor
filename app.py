@@ -496,7 +496,7 @@ with tab2:
         engineer_name_invoice = st.text_input("Engineer Name (For Expenses)")
         
     st.markdown("### 3. Select Engineer Role")
-    position = st.selectbox("Assign Hours to Position:", [
+    position = st.selectbox("Assign position:", [
         "Service Technician", 
         "Service Engineer", 
         "Senior Service Engineer", 
