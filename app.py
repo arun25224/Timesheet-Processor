@@ -16,7 +16,7 @@ logging.getLogger("ppocr").setLevel(logging.ERROR)
 
 @st.cache_resource
 def load_ocr_model():
-    return PaddleOCR(use_angle_cls=True, lang='en')
+    return PaddleOCR(lang='en')
 
 # ============================================================
 # SETTINGS & CONSTANTS
