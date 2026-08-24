@@ -1,7 +1,8 @@
-pdf2image
-pytesseract
-opencv-python
-numpy
+streamlit
 pandas
+numpy
+opencv-python-headless
+pytesseract
+pdf2image
 openpyxl
 Pillow
