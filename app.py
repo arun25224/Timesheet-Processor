@@ -17,18 +17,21 @@ import logging
 
 from paddleocr import PaddleOCR
 
-# Suppress noisy PaddleOCR logs
+# Suppress noisy PaddleOCR logs at the root logger level
 logging.getLogger("ppocr").setLevel(logging.ERROR)
 
 @st.cache_resource
 def load_ocr_model():
-    """Bulletproof OCR initialization that adapts to different PaddleOCR versions."""
+    """Bulletproof OCR initialization that adapts to ANY PaddleOCR version."""
     try:
+        # Attempt 1: Full arguments (older versions)
         return PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
-    except TypeError:
+    except Exception:
         try:
+            # Attempt 2: Remove show_log (medium versions)
             return PaddleOCR(use_angle_cls=True, lang='en')
-        except TypeError:
+        except Exception:
+            # Attempt 3: Bare minimum (newest versions)
             return PaddleOCR(lang='en')
 
 # ============================================================
@@ -123,7 +126,7 @@ def classify_activity(work_code, description):
     return "Other"
 
 # ============================================================
-# OPENCV GRID DETECTION (Tailored for your specific timesheet)
+# OPENCV GRID DETECTION
 # ============================================================
 def prepare_page(pil_image):
     img = np.array(pil_image)
