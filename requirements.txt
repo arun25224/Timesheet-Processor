@@ -1,4 +1,7 @@
 streamlit
 pandas
+numpy
+opencv-python-headless
+pytesseract
+pdf2image
 openpyxl
-img2table[paddle]
