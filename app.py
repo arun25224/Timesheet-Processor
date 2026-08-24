@@ -1,24 +1,42 @@
 import streamlit as st
 import os
 import re
+import cv2
+import numpy as np
 import pandas as pd
 from collections import Counter
 from datetime import datetime
-import tempfile
-import pytesseract
+from PIL import Image
+from pdf2image import convert_from_bytes, pdfinfo_from_bytes
 from openpyxl import load_workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
 import io
 import gc
+import logging
 
-from img2table.document import PDF
-from img2table.ocr import TesseractOCR
+from paddleocr import PaddleOCR
+logging.getLogger("ppocr").setLevel(logging.ERROR)
+
+# ============================================================
+# LOW-MEMORY AI INITIALIZATION
+# ============================================================
+@st.cache_resource
+def load_ocr_model():
+    # cpu_threads=1 and use_angle_cls=False are crucial to prevent crashes on free servers
+    return PaddleOCR(
+        use_angle_cls=False, 
+        lang='en', 
+        use_gpu=False, 
+        show_log=False,
+        cpu_threads=1 
+    )
 
 # ============================================================
 # SETTINGS
 # ============================================================
-st.set_page_config(page_title="Timesheet & Invoice Processor", layout="wide")
+st.set_page_config(page_title="Timesheet and Invoice Processor", layout="wide")
+DPI = 300
 NORMAL_START = "08:00"
 NORMAL_END = "16:00"
 
@@ -49,10 +67,13 @@ def parse_date(value):
     try: return datetime(int(match.group(3)), int(match.group(2)), int(match.group(1)))
     except: return None
 
+def format_date(value):
+    parsed = parse_date(value)
+    return parsed.strftime("%d.%m.%Y") if parsed else ""
+
 def normalise_time(value):
     if not value: return ""
-    text = clean_text(value).upper().replace("O", "0").replace("I", "1").replace("L", "1").replace(".", ":").replace(";", ":")
-    text = re.sub(r"[^0-9:]", "", text)
+    text = clean_text(value).replace("O", "0").replace("o", "0").replace("I", "1").replace("l", "1").replace(".", ":")
     match = re.search(r"\b([0-2]?\d):([0-5]\d)\b", text)
     if match:
         h, m = int(match.group(1)), int(match.group(2))
@@ -106,6 +127,49 @@ def classify_activity(work_code, description):
         if any(kw in combined for kw in keywords): return category
     return "Other"
 
+# ============================================================
+# OPENCV GRID DETECTION
+# ============================================================
+def prepare_page(pil_image):
+    img = np.array(pil_image)
+    if len(img.shape) == 3: gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    else: gray = img
+    gray = cv2.resize(gray, None, fx=1.10, fy=1.10, interpolation=cv2.INTER_CUBIC)
+    return cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+
+def cluster_values(values, tolerance=5):
+    if not values: return []
+    values = sorted([int(v) for v in values])
+    clusters, current = [], [values[0]]
+    for val in values[1:]:
+        if abs(val - np.mean(current)) <= tolerance: current.append(val)
+        else:
+            clusters.append(current)
+            current = [val]
+    clusters.append(current)
+    return [int(round(np.mean(c))) for c in clusters]
+
+def detect_vertical_lines(image):
+    height, width = image.shape[:2]
+    edges = cv2.Canny(image, 40, 150, apertureSize=3)
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, max(50, int(height * 0.03)), minLineLength=max(100, int(height * 0.30)), maxLineGap=30)
+    candidates = []
+    if lines is not None:
+        lines = np.asarray(lines).reshape(-1, 4)
+        for x1, y1, x2, y2 in lines:
+            if abs(x2 - x1) <= 5 and abs(y2 - y1) >= height * 0.30:
+                candidates.append(int(round((x1 + x2) / 2)))
+    candidates = cluster_values(candidates, tolerance=8)
+    filtered = []
+    min_space = max(20, int(width * 0.01))
+    for x in candidates:
+        if not filtered or x - filtered[-1] >= min_space: filtered.append(x)
+    expected_ratios = [0.000, 0.043, 0.205, 0.325, 0.445, 0.610, 0.772, 0.934, 1.000]
+    if len(filtered) == 9: return filtered
+    left = filtered[0] if len(filtered) >= 2 else int(width * 0.015)
+    right = filtered[-1] if len(filtered) >= 2 else int(width * 0.985)
+    return [int(round(left + r * (right - left))) for r in expected_ratios]
+
 def clean_engineer_name(value):
     val = clean_text(value)
     if not val: return ""
@@ -150,6 +214,7 @@ def apply_total_row(ws, sum_min_col, sum_max_col, start_row, end_row, table_max_
     first_cell = ws.cell(row=total_row, column=1, value="Total")
     first_cell.font = Font(bold=True)
     first_cell.alignment = Alignment(horizontal="center", vertical="center")
+    
     for c in range(1, table_max_col + 1):
         cell = ws.cell(row=total_row, column=c)
         cell.border = border
@@ -161,128 +226,154 @@ def apply_total_row(ws, sum_min_col, sum_max_col, start_row, end_row, table_max_
             cell.number_format = "0.00"
 
 # ============================================================
-# TABLE PARSING LOGIC
-# ============================================================
-def parse_img2table_df(df):
-    rows = []
-    header_idx = -1
-    col_map = {}
-    
-    for i in range(len(df)):
-        row_str = " ".join([str(x).lower() for x in df.iloc[i].values if pd.notna(x)])
-        if "date" in row_str and "start" in row_str:
-            header_idx = i
-            headers = [str(x).lower() for x in df.iloc[i].values]
-            for j, h in enumerate(headers):
-                if "date" in h: col_map["date"] = j
-                elif "start" in h: col_map["start"] = j
-                elif "end" in h: col_map["end"] = j
-                elif "work" in h or "code" in h: col_map["code"] = j
-                elif "desc" in h or "short" in h: col_map["desc"] = j
-                elif "engineer" in h or "name" in h: col_map["engineer"] = j
-            break
-            
-    if header_idx == -1: return rows
-    
-    # Fallback to standard 8-column layout if headers are blurry
-    if "date" not in col_map: col_map["date"] = 1
-    if "start" not in col_map: col_map["start"] = 2
-    if "end" not in col_map: col_map["end"] = 3
-    if "code" not in col_map: col_map["code"] = 4
-    if "desc" not in col_map: col_map["desc"] = 5
-    if "engineer" not in col_map: col_map["engineer"] = 6
-    
-    for i in range(header_idx + 1, len(df)):
-        row_vals = df.iloc[i].values
-        if len(row_vals) <= col_map["date"]: continue
-        
-        date_val = str(row_vals[col_map["date"]]) if pd.notna(row_vals[col_map["date"]]) else ""
-        parsed = parse_date(date_val)
-        if not parsed: continue
-        
-        start_val = str(row_vals[col_map["start"]]) if len(row_vals) > col_map["start"] and pd.notna(row_vals[col_map["start"]]) else ""
-        end_val = str(row_vals[col_map["end"]]) if len(row_vals) > col_map["end"] and pd.notna(row_vals[col_map["end"]]) else ""
-        code_val = str(row_vals[col_map["code"]]) if len(row_vals) > col_map["code"] and pd.notna(row_vals[col_map["code"]]) else ""
-        desc_val = str(row_vals[col_map["desc"]]) if len(row_vals) > col_map["desc"] and pd.notna(row_vals[col_map["desc"]]) else ""
-        eng_val = str(row_vals[col_map["engineer"]]) if len(row_vals) > col_map["engineer"] and pd.notna(row_vals[col_map["engineer"]]) else ""
-        
-        date_clean = parsed.strftime("%d.%m.%Y")
-        start_clean = normalise_time(start_val)
-        end_clean = normalise_time(end_val)
-        eng_clean = clean_engineer_name(eng_val)
-        wc_clean = clean_text(code_val)
-        desc_clean = clean_text(desc_val)
-        
-        is_weekend = parsed.weekday() >= 5
-        reg_hrs, ot_hrs = 0.0, 0.0
-        
-        if start_clean and end_clean:
-            reg_hrs, ot_hrs = calculate_regular_ot(start_clean, end_clean)
-            if is_weekend:
-                ot_hrs += reg_hrs
-                reg_hrs = 0.0
-                
-        rows.append({
-            "Engineer Name": eng_clean,
-            "Date": date_clean,
-            "Start Time": start_clean,
-            "End Time": end_clean,
-            "Work Code": wc_clean,
-            "Short Description": desc_clean,
-            "Category": classify_activity(wc_clean, desc_clean),
-            "Regular Hours": reg_hrs,
-            "OT Hours": ot_hrs
-        })
-        
-    return rows
-
-# ============================================================
 # STREAMLIT UI & TABS
 # ============================================================
-st.title("Timesheet & Invoice Automation")
-
+st.title("Timesheet and Invoice Automation")
 tab1, tab2 = st.tabs(["Step 1: Timesheet Extraction", "Step 2: Invoice Generation"])
 
+# ------------------------------------------------------------
+# TAB 1: PADDLEOCR TIMESHEET EXTRACTION
+# ------------------------------------------------------------
 with tab1:
-    st.header("Automated Timesheet Processor (img2table Engine)")
-    st.write("Upload a scanned PDF timesheet to extract data into the 3-tab Excel format.")
+    st.header("Deep Learning Timesheet Processor")
+    st.write("Upload a scanned PDF timesheet to extract data across all pages into the Excel format.")
 
     uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
 
     if uploaded_file is not None:
         if st.button("Extract Data from PDF"):
-            with st.spinner('Running high-accuracy table extraction... Please wait.'):
+            with st.spinner('Analyzing image and extracting data across all pages (Low Memory Mode)...'):
                 try:
+                    ocr = load_ocr_model()
+                    
                     pdf_bytes = uploaded_file.read()
-                    
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                        tmp.write(pdf_bytes)
-                        tmp_path = tmp.name
-                        
-                    ocr_engine = TesseractOCR(n_threads=1, lang="eng")
-                    pdf_doc = PDF(tmp_path)
-                    
-                    extracted_tables = pdf_doc.extract_tables(ocr=ocr_engine, implicit_rows=False, borderless_tables=False, min_confidence=50)
+                    pdf_info = pdfinfo_from_bytes(pdf_bytes)
+                    total_pages = pdf_info["Pages"]
                     
                     raw_rows = []
                     engineer_names = []
                     
-                    for page_num, tables in extracted_tables.items():
-                        for table in tables:
-                            parsed_rows = parse_img2table_df(table.df)
-                            for r in parsed_rows:
-                                raw_rows.append(r)
-                                if r["Engineer Name"]: engineer_names.append(r["Engineer Name"])
+                    global_x_bounds = []
+                    last_seen_date = None
+                    last_seen_engineer = None
+                    
+                    progress_bar = st.progress(0)
+                    
+                    # LOOP REPEATS FOR EVERY PAGE IN THE PDF
+                    for page_num in range(1, total_pages + 1):
+                        page_images = convert_from_bytes(
+                            pdf_bytes, dpi=DPI, fmt="png", thread_count=1, first_page=page_num, last_page=page_num
+                        )
+                        pil_page = page_images[0]
+                        img_rgb = np.array(pil_page)
+                        
+                        gray = prepare_page(pil_page)
+                        h, w = gray.shape[:2]
+                        
+                        # Detect grid lines on the current page
+                        x_bounds = detect_vertical_lines(gray)
+                        if len(x_bounds) >= 8:
+                            if not global_x_bounds: global_x_bounds = x_bounds
+                        elif global_x_bounds:
+                            x_bounds = global_x_bounds
+                        else:
+                            expected_ratios = [0.000, 0.043, 0.205, 0.325, 0.445, 0.610, 0.772, 0.934, 1.000]
+                            x_bounds = [int(w * r) for r in expected_ratios]
+                            global_x_bounds = x_bounds
+                        
+                        # Extract all text on the current page using low-memory constraints
+                        ocr_results = ocr.ocr(img_rgb, cls=False)
+                        
+                        text_boxes = []
+                        if ocr_results and ocr_results[0]:
+                            for line in ocr_results[0]:
+                                box, (text, conf) = line
+                                xs = [p[0] for p in box]
+                                ys = [p[1] for p in box]
+                                cx, cy = (sum(xs)/4)*1.1, (sum(ys)/4)*1.1
+                                text_boxes.append({"text": text, "cx": cx, "cy": cy})
+                        
+                        # Cluster into rows based on vertical position
+                        text_boxes.sort(key=lambda x: x["cy"])
+                        visual_rows = []
+                        current_row = []
+                        for tb in text_boxes:
+                            if not current_row:
+                                current_row.append(tb)
+                            elif abs(tb["cy"] - current_row[0]["cy"]) <= 20:
+                                current_row.append(tb)
+                            else:
+                                visual_rows.append(current_row)
+                                current_row = [tb]
+                        if current_row: visual_rows.append(current_row)
+                        
+                        # Map text into columns and add to the master list
+                        for row_tbs in visual_rows:
+                            cells_text = [""] * 8
+                            for tb in row_tbs:
+                                for i in range(8):
+                                    left_bound = x_bounds[i]
+                                    right_bound = x_bounds[i+1] if i+1 < len(x_bounds) else w
+                                    if left_bound - 15 <= tb["cx"] <= right_bound + 15:
+                                        cells_text[i] += (" " + tb["text"] if cells_text[i] else tb["text"])
+                            
+                            start_clean = normalise_time(cells_text[2])
+                            end_clean = normalise_time(cells_text[3])
+                            wc_clean = clean_text(cells_text[4])
+                            
+                            if not start_clean and not end_clean and not wc_clean:
+                                continue
                                 
-                    os.remove(tmp_path)
-                    gc.collect()
+                            parsed_date = parse_date(cells_text[1])
+                            if parsed_date:
+                                date_clean = parsed_date.strftime("%d.%m.%Y")
+                                last_seen_date = date_clean
+                            else:
+                                date_clean = last_seen_date
+                                
+                            if not date_clean: continue
+                            
+                            is_weekend = datetime.strptime(date_clean, "%d.%m.%Y").weekday() >= 5
+                            
+                            eng_clean = clean_engineer_name(cells_text[6])
+                            if eng_clean:
+                                last_seen_engineer = eng_clean
+                                engineer_names.append(eng_clean)
+                            else:
+                                eng_clean = last_seen_engineer
+                                
+                            desc_clean = clean_text(cells_text[5])
+                            
+                            reg_hrs, ot_hrs = 0.0, 0.0
+                            if start_clean and end_clean:
+                                r, o = calculate_regular_ot(start_clean, end_clean)
+                                if is_weekend:
+                                    ot_hrs, reg_hrs = r + o, 0.0
+                                else:
+                                    reg_hrs, ot_hrs = r, o
+                                    
+                            # ADD TO MASTER LIST
+                            raw_rows.append({
+                                "Engineer Name": eng_clean, "Date": date_clean, "Start Time": start_clean, 
+                                "End Time": end_clean, "Work Code": wc_clean, "Short Description": desc_clean, 
+                                "Category": classify_activity(wc_clean, desc_clean), "Regular Hours": reg_hrs, 
+                                "OT Hours": ot_hrs
+                            })
+                            
+                        progress_bar.progress(page_num / total_pages)
+                        
+                        # --- STRICT MEMORY CLEARING ---
+                        del page_images, pil_page, gray, img_rgb, ocr_results, text_boxes
+                        gc.collect()
                     
                     if not raw_rows:
                         st.error("No usable rows extracted. Please ensure the PDF scan is clear.")
                         st.stop()
                     
+                    # COMPILE MASTER LIST INTO EXCEL
                     canonical_engineer = choose_engineer_name(engineer_names)
-                    for r in raw_rows: r["Engineer Name"] = canonical_engineer
+                    for r in raw_rows: 
+                        if not r["Engineer Name"]: r["Engineer Name"] = canonical_engineer
                     
                     aggregated = {}
                     for r in raw_rows:
@@ -367,8 +458,8 @@ with tab1:
                             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
                             if cell.column >= 3 and cell.row > 1 and isinstance(cell.value, (int, float)): cell.number_format = "0.00"
                     if ws_raw.max_row >= 2: apply_total_row(ws_raw, 3, 18, 2, ws_raw.max_row, 18)
-                    widths = {"A":24, "B":14, "C":16, "D":18, "E":16, "F":18, "G":16, "H":18, "I":20, "J":22, "K":20, "L":22, "M":17, "N":19, "O":17, "P":19, "Q":15, "R":17}
-                    for col, width in widths.items(): ws_raw.column_dimensions[col].width = width
+                    for col, width in {"A":24, "B":14, "C":16, "D":18, "E":16, "F":18, "G":16, "H":18, "I":20, "J":22, "K":20, "L":22, "M":17, "N":19, "O":17, "P":19, "Q":15, "R":17}.items(): 
+                        ws_raw.column_dimensions[col].width = width
                     
                     ws_client = workbook["Client"]
                     ws_client["A1"] = "Timesheet Calculation (Singapore)"
@@ -386,8 +477,8 @@ with tab1:
                             cell.border = border
                             cell.alignment = Alignment(horizontal="center", vertical="center")
                     if ws_client.max_row >= 4: apply_total_row(ws_client, 4, 9, 4, ws_client.max_row, 10)
-                    client_widths = {"A":12, "B":10, "C":8, "D":12, "E":12, "F":12, "G":14, "H":14, "I":10, "J":25}
-                    for col, w in client_widths.items(): ws_client.column_dimensions[col].width = w
+                    for col, w in {"A":12, "B":10, "C":8, "D":12, "E":12, "F":12, "G":14, "H":14, "I":10, "J":25}.items(): 
+                        ws_client.column_dimensions[col].width = w
                     
                     ws_eng = workbook["Engineer"]
                     ws_eng["A1"] = "Timesheet Calculation (ENGINEER OT)"
@@ -406,8 +497,8 @@ with tab1:
                             cell.border = border
                             cell.alignment = Alignment(horizontal="center", vertical="center")
                     if ws_eng.max_row >= 4: apply_total_row(ws_eng, 4, 8, 4, ws_eng.max_row, 9)
-                    eng_widths = {"A":12, "B":10, "C":8, "D":12, "E":12, "F":15, "G":12, "H":14, "I":25}
-                    for col, w in eng_widths.items(): ws_eng.column_dimensions[col].width = w
+                    for col, w in {"A":12, "B":10, "C":8, "D":12, "E":12, "F":15, "G":12, "H":14, "I":25}.items(): 
+                        ws_eng.column_dimensions[col].width = w
                     
                     final_output = io.BytesIO()
                     workbook.save(final_output)
