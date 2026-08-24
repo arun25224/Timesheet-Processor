@@ -3,5 +3,4 @@ pandas
 openpyxl
 pdf2image
 opencv-python-headless
-paddlepaddle
-paddleocr
+pytesseract
