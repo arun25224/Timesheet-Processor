@@ -209,20 +209,20 @@ def apply_total_row(ws, sum_min_col, sum_max_col, start_row, end_row, table_max_
 # STREAMLIT UI & TABS
 # ============================================================
 st.title("Timesheet and Invoice Automation")
-tab1, tab2 = st.tabs(["Step 1: Timesheet Extraction", "Step 2: Invoice Generation"])
+tab1, tab2 = st.tabs(["Timesheet", "Invoice"])
 
 # ------------------------------------------------------------
 # TAB 1: TIMESHEET EXTRACTION (TESSERACT)
 # ------------------------------------------------------------
 with tab1:
-    st.header("Deep Learning Timesheet Processor")
-    st.write("Upload a scanned PDF timesheet to extract data across all pages into the Excel format.")
+    st.header("Timesheet Processor")
+    st.write("Upload a PDF timesheet.")
 
     uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
 
     if uploaded_file is not None:
         if st.button("Extract Data from PDF"):
-            with st.spinner('Analyzing image and extracting data across all pages...'):
+            with st.spinner('Analysing...'):
                 try:
                     pdf_bytes = uploaded_file.read()
                     pdf_info = pdfinfo_from_bytes(pdf_bytes)
