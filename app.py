@@ -208,7 +208,7 @@ def apply_total_row(ws, sum_min_col, sum_max_col, start_row, end_row, table_max_
 # ============================================================
 # STREAMLIT UI & TABS
 # ============================================================
-st.title("Timesheet and Invoice Automation")
+st.title("Timesheet and Invoice Processor")
 tab1, tab2 = st.tabs(["Timesheet", "Invoice"])
 
 # ------------------------------------------------------------
@@ -466,7 +466,7 @@ with tab1:
 # ------------------------------------------------------------
 with tab2:
     st.header("Final Invoice Generation")
-    st.write("Fill in the customer details and generate the final invoice template.")
+    st.write("Fill in the engineer's details and generate the final invoice.")
     
     st.markdown("### 1. Upload Required Files")
     col1, col2 = st.columns(2)
@@ -491,14 +491,14 @@ with tab2:
         engineer_name_invoice = st.text_input("Engineer Name (For Expenses)")
         
     st.markdown("### 3. Select Engineer Role")
-    position = st.selectbox("Assign Hours to Position:", [
+    position = st.selectbox("Assign position:", [
         "Service Technician", 
         "Service Engineer", 
         "Senior Service Engineer", 
         "Specialist Service Engineer"
     ])
     
-    if st.button("Generate Final Invoice", type="primary"):
+    if st.button("Generate Invoice", type="primary"):
         if not timesheet_excel or not template_excel:
             st.error("Please upload both the Processed Timesheet AND the Invoice Template first.")
         else:
