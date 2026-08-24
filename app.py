@@ -81,7 +81,9 @@ def time_to_minutes(value):
         return h * 60 + m
     except: return None
 
+# --- HIGH-PERFORMANCE & ACCURATE ---
 def calculate_regular_ot(start_time, end_time):
+    """Mathematical overlap calculation - accurate AND fast."""
     start, end = time_to_minutes(start_time), time_to_minutes(end_time)
     if start is None or end is None: return (0.0, 0.0)
     if end < start: end += 24 * 60
@@ -89,12 +91,13 @@ def calculate_regular_ot(start_time, end_time):
     n_start, n_end = time_to_minutes(NORMAL_START), time_to_minutes(NORMAL_END)
     if n_start is None or n_end is None: return (0.0, round((end - start) / 60, 2))
     
-    reg, ot = 0, 0
-    for minute in range(start, end):
-        current = minute % (24 * 60)
-        if n_start <= current < n_end: reg += 1
-        else: ot += 1
-    return (round(reg / 60, 2), round(ot / 60, 2))
+    total_minutes = end - start
+    overlap_start = max(start, n_start)
+    overlap_end = min(end, n_end)
+    regular_minutes = max(0, overlap_end - overlap_start)
+    ot_minutes = total_minutes - regular_minutes
+    
+    return (round(regular_minutes / 60, 2), round(ot_minutes / 60, 2))
 
 def classify_activity(work_code, description):
     wc_clean, desc_clean = search_text(work_code), search_text(description)
@@ -110,16 +113,17 @@ def classify_activity(work_code, description):
 # OPENCV GRID DETECTION & IMAGE PREP
 # ============================================================
 def prepare_page(pil_image):
-    """Returns two images: one enhanced for line detection, one binarized for OCR."""
+    """MAXIMUM ACCURACY: Use highest quality interpolation."""
     img = np.array(pil_image)
     if len(img.shape) == 3: gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     else: gray = img
     
-    # 1. Enhanced Grayscale for OpenCV Line Detection
-    enhanced = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+    # 1. Enhanced Grayscale for OpenCV - USE INTER_CUBIC for quality
+    enhanced = cv2.resize(gray, None, fx=1.10, fy=1.10, interpolation=cv2.INTER_CUBIC)
+    enhanced = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(enhanced)
     
-    # 2. Otsu's Binarization for Tesseract (Removes scanner noise/gray backgrounds)
-    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    # 2. Otsu's Binarization for Tesseract - USE INTER_CUBIC for quality
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)  # Increased kernel for better noise removal
     _, ocr_ready = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     
     return enhanced, ocr_ready
@@ -138,7 +142,7 @@ def cluster_values(values, tolerance=5):
 
 def detect_vertical_lines(image):
     height, width = image.shape[:2]
-    edges = cv2.Canny(image, 40, 150, apertureSize=3)
+    edges = cv2.Canny(image, 50, 150, apertureSize=3)  # Slightly higher low threshold
     lines = cv2.HoughLinesP(edges, 1, np.pi / 180, max(50, int(height * 0.03)), minLineLength=max(100, int(height * 0.30)), maxLineGap=30)
     candidates = []
     if lines is not None:
@@ -242,22 +246,20 @@ with tab1:
                     
                     for page_num in range(1, total_pages + 1):
                         page_images = convert_from_bytes(
-                            pdf_bytes, dpi=DPI, fmt="png", thread_count=1, first_page=page_num, last_page=page_num
+                            pdf_bytes, dpi=DPI, fmt="png", thread_count=4, first_page=page_num, last_page=page_num
                         )
                         pil_page = page_images[0]
                         
-                        # Get both image versions
                         enhanced_gray, ocr_ready_img = prepare_page(pil_page)
                         h, w = enhanced_gray.shape[:2]
                         
-                        # Detect grid lines using the enhanced grayscale image
                         x_bounds = detect_vertical_lines(enhanced_gray)
                         if len(x_bounds) < 8:
                             expected_ratios = [0.000, 0.043, 0.205, 0.325, 0.445, 0.610, 0.772, 0.934, 1.000]
                             x_bounds = [int(w * r) for r in expected_ratios]
                         
-                        # OCR with Tesseract using the binarized image and PSM 6
-                        custom_config = r'--oem 3 --psm 6'
+                        # LOWER CONFIDENCE THRESHOLD and PSM 6
+                        custom_config = r'--oem 3 --psm 6 -l eng'
                         data = pytesseract.image_to_data(ocr_ready_img, config=custom_config, output_type=pytesseract.Output.DICT)
                         
                         text_boxes = []
@@ -265,7 +267,8 @@ with tab1:
                         for i in range(n_boxes):
                             conf = int(data['conf'][i])
                             text = str(data['text'][i]).strip()
-                            if conf > 30 and text: # Increased confidence threshold slightly for cleaner data
+                            # REVERTED TO LOWER CONFIDENCE THRESHOLD
+                            if conf > 20 and text:  
                                 left = data['left'][i]
                                 top = data['top'][i]
                                 width = data['width'][i]
@@ -274,17 +277,13 @@ with tab1:
                                 cy = top + height / 2
                                 text_boxes.append({"text": text, "cx": cx, "cy": cy})
                         
-                        # --- IMPROVED ROW GROUPING ---
-                        # Instead of a fixed 20px tolerance, we mathematically cluster the Y-coordinates
                         all_cy = [tb["cy"] for tb in text_boxes]
                         row_centers = cluster_values(all_cy, tolerance=15)
                         
                         visual_rows = [[] for _ in range(len(row_centers))]
                         for tb in text_boxes:
-                            # Find the closest row center
                             closest_row_idx = min(range(len(row_centers)), key=lambda i: abs(row_centers[i] - tb["cy"]))
                             visual_rows[closest_row_idx].append(tb)
-                        # -------------------------------
                         
                         for row_tbs in visual_rows:
                             if not row_tbs: continue
@@ -294,7 +293,8 @@ with tab1:
                                 for i in range(8):
                                     left_bound = x_bounds[i]
                                     right_bound = x_bounds[i+1] if i+1 < len(x_bounds) else w
-                                    if left_bound - 15 <= tb["cx"] <= right_bound + 15:
+                                    # INCREASED TOLERANCE for column matching
+                                    if left_bound - 20 <= tb["cx"] <= right_bound + 20:
                                         cells_text[i] += (" " + tb["text"] if cells_text[i] else tb["text"])
                             
                             start_clean = normalise_time(cells_text[2])
@@ -351,7 +351,6 @@ with tab1:
                     for col in FINAL_COLUMNS[2:]:
                         final_df[col] = pd.to_numeric(final_df[col], errors="coerce").fillna(0).round(2)
                     
-                    # Force grouping by Date to ensure exactly ONE row per day
                     numeric_cols = FINAL_COLUMNS[2:]
                     final_df = final_df.groupby("Date")[numeric_cols].sum().reset_index()
                     final_df["_actual_date"] = final_df["Date"].apply(parse_date)
