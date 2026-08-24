@@ -3,3 +3,4 @@ pandas
 openpyxl
 pytesseract
 img2table
+opencv-python-headless
