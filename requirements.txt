@@ -5,5 +5,4 @@ opencv-python-headless
 numpy
 pdf2image
 Pillow
-paddlepaddle
-paddleocr
+pytesseract
