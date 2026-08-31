@@ -47,8 +47,11 @@ with c2:
     vessel_name = st.text_input("Vessel Name")
     vessel_no = st.text_input("Vessel No (if applicable)")
     engineer_name_invoice = st.text_input("Engineer Name (For Expenses)")
+
+st.markdown("### 3. Type of Service")
+service_category = st.radio("Select Type of Service:", ["Internal", "External"])
     
-st.markdown("### 3. Select Engineer Role")
+st.markdown("### 4. Select Engineer Role")
 position = st.selectbox("Assign Hours to Position:", [
     "Service Technician", 
     "Service Engineer", 
@@ -61,11 +64,14 @@ if st.button("Generate Final Invoice", type="primary"):
         st.error("Please upload the Engineer Timesheet, Client Timesheet, AND the Invoice Template.")
     else:
         try:
+            # --- PROCESS ENGINEER TIMESHEET (Work Hours) ---
             ts_df = pd.read_excel(engineer_timesheet, sheet_name=0, skiprows=3)
             
+            # Remove the "Total" row to prevent double-counting
             if 'Date' in ts_df.columns:
                 ts_df = ts_df[ts_df['Date'] != 'Total']
                 
+            # Safely extract and calculate hours from Engineer
             travel = pd.to_numeric(ts_df["Travel"], errors="coerce").sum() if "Travel" in ts_df.columns else 0.0
             travel_ot = pd.to_numeric(ts_df["Travel OT"], errors="coerce").sum() if "Travel OT" in ts_df.columns else 0.0
             travel_sum = travel + travel_ot
@@ -76,6 +82,7 @@ if st.button("Generate Final Invoice", type="primary"):
             waiting_sum = pd.to_numeric(ts_df["Waiting time"], errors="coerce").sum() if "Waiting time" in ts_df.columns else 0.0
             prep_sum = pd.to_numeric(ts_df["Preparation"], errors="coerce").sum() if "Preparation" in ts_df.columns else 0.0
             
+            # --- PROCESS CLIENT TIMESHEET (Local Transport) ---
             client_df = pd.read_excel(client_timesheet, sheet_name=0, skiprows=3)
             
             if 'Date' in client_df.columns:
@@ -83,6 +90,7 @@ if st.button("Generate Final Invoice", type="primary"):
                 
             l_trpt_sum = pd.to_numeric(client_df["L.Trpt"], errors="coerce").sum() if "L.Trpt" in client_df.columns else 0.0
             
+            # --- LOAD AND FILL INVOICE TEMPLATE ---
             wb = load_workbook(template_excel)
             if "SG" not in wb.sheetnames:
                 st.error("The uploaded template does not contain an 'SG' tab.")
@@ -90,6 +98,7 @@ if st.button("Generate Final Invoice", type="primary"):
                 
             ws = wb["SG"]
             
+            # Inject Customer Information
             safe_write(ws, 7, 3, cust_name)
             safe_write(ws, 8, 3, inv_address)
             safe_write(ws, 9, 3, del_address)
@@ -100,6 +109,7 @@ if st.button("Generate Final Invoice", type="primary"):
             safe_write(ws, 14, 3, vessel_name)
             safe_write(ws, 15, 3, vessel_no)
             
+            # Determine Row Offset based on Engineer Role
             r_offset = 20
             if position == "Service Engineer":
                 r_offset = 30
@@ -108,6 +118,7 @@ if st.button("Generate Final Invoice", type="primary"):
             elif position == "Specialist Service Engineer":
                 r_offset = 50
                 
+            # Inject Hours into Invoice Table
             safe_write(ws, r_offset + 1, 4, travel_sum if travel_sum > 0 else "")
             safe_write(ws, r_offset + 2, 4, nt_sum if nt_sum > 0 else "")
             safe_write(ws, r_offset + 3, 4, ot_sum if ot_sum > 0 else "")
@@ -117,6 +128,7 @@ if st.button("Generate Final Invoice", type="primary"):
             expense_row = None
             local_transport_row = None
             
+            # Dynamically locate Expenses and Local Transport rows
             for row_idx in range(1, 150):
                 col_b_val = ws.cell(row=row_idx, column=2).value
                 col_c_val = ws.cell(row=row_idx, column=3).value
@@ -133,8 +145,15 @@ if st.button("Generate Final Invoice", type="primary"):
             if local_transport_row and l_trpt_sum > 0:
                 safe_write(ws, local_transport_row, 4, l_trpt_sum)
 
-            safe_write(ws, 80, 7, "=SUM(G41:G47,G61:G63,C78,G31:G37, G21:G27)")
+            # --- DYNAMIC INVOICE TOTALS AND SERVICE TYPE LOGIC ---
+            if service_category == "Internal":
+                safe_write(ws, 78, 3, "-")
+            else:
+                safe_write(ws, 78, 3, "=SUM(G41:G47,G61:G63,G31:G37, G21:G27, G51:G57)*0.1")
+
+            safe_write(ws, 80, 3, "=SUM(G41:G47,G61:G63,C78,G31:G37, G21:G27, G51:G57)")
             
+            # Export Final Invoice
             invoice_output = io.BytesIO()
             wb.save(invoice_output)
             invoice_output.seek(0)
