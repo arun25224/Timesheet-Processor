@@ -20,7 +20,7 @@ def process_invoice_logic(
     eng_df, client_df, template_file, 
     cust_name, inv_address, del_address, reference, cust_po, 
     proj_no, svc_type, vessel_name, vessel_no, engineer_name, 
-    service_category, position, currency
+    include_admin_fee, position, currency
 ):
     # --- PROCESS ENGINEER TIMESHEET (Work Hours) ---
     if 'Date' in eng_df.columns:
@@ -109,7 +109,7 @@ def process_invoice_logic(
     admin_row = 78 if currency == "SG" else 82
     total_row = 80 if currency == "SG" else (86 if currency == "CN" else 84)
 
-    if service_category == "Internal":
+    if include_admin_fee == "No":
         safe_write(ws, admin_row, 3, "-")
     else:
         safe_write(ws, admin_row, 3, "=SUM(G41:G47,G61:G63,G31:G37, G21:G27, G51:G57)*0.1")
@@ -168,7 +168,7 @@ with tab1:
     with c3_t1:
         currency_t1 = st.selectbox("Select Currency:", ["SG", "CN", "KR", "EUR", "USD"], key="curr_t1")
     with c4_t1:
-        service_category_t1 = st.radio("Select Type of Service:", ["Internal", "External"], key="svc_cat_t1")
+        include_admin_fee_t1 = st.radio("Include 10% Admin Fee?", ["Yes", "No"], key="admin_fee_t1")
     with c5_t1:
         position_t1 = st.selectbox("Assign Hours to Position:", [
             "Service Technician", "Service Engineer", "Senior Service Engineer", "Specialist Service Engineer"
@@ -186,7 +186,7 @@ with tab1:
                     eng_df, client_df, template_excel_t1, 
                     cust_name_t1, inv_address_t1, del_address_t1, reference_t1, cust_po_t1, 
                     proj_no_t1, svc_type_t1, vessel_name_t1, vessel_no_t1, engineer_name_invoice_t1, 
-                    service_category_t1, position_t1, currency_t1
+                    include_admin_fee_t1, position_t1, currency_t1
                 )
                 
                 st.success("Invoice Generated Successfully")
@@ -233,7 +233,7 @@ with tab2:
     with c3_t2:
         currency_t2 = st.selectbox("Select Currency:", ["SG", "CN", "KR", "EUR", "USD"], key="curr_t2")
     with c4_t2:
-        service_category_t2 = st.radio("Select Type of Service:", ["Internal", "External"], key="svc_cat_t2")
+        include_admin_fee_t2 = st.radio("Include 10% Admin Fee?", ["Yes", "No"], key="admin_fee_t2")
     with c5_t2:
         position_t2 = st.selectbox("Assign Hours to Position:", [
             "Service Technician", "Service Engineer", "Senior Service Engineer", "Specialist Service Engineer"
@@ -251,7 +251,7 @@ with tab2:
                     eng_df, client_df, template_excel_t2, 
                     cust_name_t2, inv_address_t2, del_address_t2, reference_t2, cust_po_t2, 
                     proj_no_t2, svc_type_t2, vessel_name_t2, vessel_no_t2, engineer_name_invoice_t2, 
-                    service_category_t2, position_t2, currency_t2
+                    include_admin_fee_t2, position_t2, currency_t2
                 )
                 
                 st.success("Invoice Generated Successfully")
