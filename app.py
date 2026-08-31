@@ -21,10 +21,10 @@ def safe_write(ws, row_idx, col_idx, value):
 # ============================================================
 st.set_page_config(page_title="Invoice Generator", layout="wide")
 
-st.title("Final Invoice Generation")
-st.write("Fill in the customer details and generate the final invoice template.")
+st.title("Invoice Generation")
+st.write("Fill in the engineer's details and generate the final invoice.")
 
-st.markdown("### 1. Upload Required Files")
+st.markdown("### 1. Upload Files")
 col1, col2, col3 = st.columns(3)
 with col1:
     engineer_timesheet = st.file_uploader("Upload Engineer Timesheet", type=["xlsx"], key="eng_upload")
@@ -64,14 +64,14 @@ if st.button("Generate Final Invoice", type="primary"):
         st.error("Please upload the Engineer Timesheet, Client Timesheet, AND the Invoice Template.")
     else:
         try:
-            # --- PROCESS ENGINEER TIMESHEET (Work Hours) ---
+            # PROCESS ENGINEER TIMESHEET (Work Hours)
             ts_df = pd.read_excel(engineer_timesheet, sheet_name=0, skiprows=3)
             
             # Remove the "Total" row to prevent double-counting
             if 'Date' in ts_df.columns:
                 ts_df = ts_df[ts_df['Date'] != 'Total']
                 
-            # Safely extract and calculate hours from Engineer
+            # Extract and calculate hours from Engineer
             travel = pd.to_numeric(ts_df["Travel"], errors="coerce").sum() if "Travel" in ts_df.columns else 0.0
             travel_ot = pd.to_numeric(ts_df["Travel OT"], errors="coerce").sum() if "Travel OT" in ts_df.columns else 0.0
             travel_sum = travel + travel_ot
@@ -82,7 +82,7 @@ if st.button("Generate Final Invoice", type="primary"):
             waiting_sum = pd.to_numeric(ts_df["Waiting time"], errors="coerce").sum() if "Waiting time" in ts_df.columns else 0.0
             prep_sum = pd.to_numeric(ts_df["Preparation"], errors="coerce").sum() if "Preparation" in ts_df.columns else 0.0
             
-            # --- PROCESS CLIENT TIMESHEET (Local Transport) ---
+            # PROCESS CLIENT TIMESHEET (Local Transport)
             client_df = pd.read_excel(client_timesheet, sheet_name=0, skiprows=3)
             
             if 'Date' in client_df.columns:
@@ -90,7 +90,7 @@ if st.button("Generate Final Invoice", type="primary"):
                 
             l_trpt_sum = pd.to_numeric(client_df["L.Trpt"], errors="coerce").sum() if "L.Trpt" in client_df.columns else 0.0
             
-            # --- LOAD AND FILL INVOICE TEMPLATE ---
+            # LOAD AND FILL INVOICE TEMPLATE
             wb = load_workbook(template_excel)
             if "SG" not in wb.sheetnames:
                 st.error("The uploaded template does not contain an 'SG' tab.")
@@ -128,7 +128,7 @@ if st.button("Generate Final Invoice", type="primary"):
             expense_row = None
             local_transport_row = None
             
-            # Dynamically locate Expenses and Local Transport rows
+            # Locate Expenses and Local Transport rows
             for row_idx in range(1, 150):
                 col_b_val = ws.cell(row=row_idx, column=2).value
                 col_c_val = ws.cell(row=row_idx, column=3).value
@@ -145,7 +145,7 @@ if st.button("Generate Final Invoice", type="primary"):
             if local_transport_row and l_trpt_sum > 0:
                 safe_write(ws, local_transport_row, 4, l_trpt_sum)
 
-            # --- DYNAMIC INVOICE TOTALS AND SERVICE TYPE LOGIC ---
+            # INVOICE TOTALS AND SERVICE TYPE LOGIC
             if service_category == "Internal":
                 safe_write(ws, 78, 3, "-")
             else:
