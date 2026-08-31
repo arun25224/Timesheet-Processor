@@ -9,11 +9,13 @@ st.title("Final Invoice Generation")
 st.write("Fill in the customer details and generate the final invoice template.")
 
 st.markdown("### 1. Upload Required Files")
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 with col1:
-    timesheet_excel = st.file_uploader("Upload Processed Timesheet (Excel)", type=["xlsx"], key="ts_upload")
+    engineer_timesheet = st.file_uploader("Upload Engineer Timesheet", type=["xlsx"], key="eng_upload")
 with col2:
-    template_excel = st.file_uploader("Upload Blank Invoice Template (Excel)", type=["xlsx"], key="inv_upload")
+    client_timesheet = st.file_uploader("Upload Client Timesheet", type=["xlsx"], key="cli_upload")
+with col3:
+    template_excel = st.file_uploader("Upload Blank Invoice Template", type=["xlsx"], key="inv_upload")
     
 st.markdown("### 2. Enter Information")
 c1, c2 = st.columns(2)
@@ -39,18 +41,18 @@ position = st.selectbox("Assign Hours to Position:", [
 ])
 
 if st.button("Generate Final Invoice", type="primary"):
-    if not timesheet_excel or not template_excel:
-        st.error("Please upload both the Processed Timesheet AND the Invoice Template first.")
+    if not engineer_timesheet or not client_timesheet or not template_excel:
+        st.error("Please upload the Engineer Timesheet, Client Timesheet, AND the Invoice Template.")
     else:
         try:
-            # Read the Timesheet Excel file
-            ts_df = pd.read_excel(timesheet_excel, sheet_name=0, skiprows=3)
+            # --- PROCESS ENGINEER TIMESHEET (Work Hours) ---
+            ts_df = pd.read_excel(engineer_timesheet, sheet_name=0, skiprows=3)
             
             # Remove the "Total" row to prevent double-counting
             if 'Date' in ts_df.columns:
                 ts_df = ts_df[ts_df['Date'] != 'Total']
                 
-            # Safely extract and calculate hours
+            # Safely extract and calculate hours from Engineer
             travel = pd.to_numeric(ts_df["Travel"], errors="coerce").sum() if "Travel" in ts_df.columns else 0.0
             travel_ot = pd.to_numeric(ts_df["Travel OT"], errors="coerce").sum() if "Travel OT" in ts_df.columns else 0.0
             travel_sum = travel + travel_ot
@@ -60,9 +62,16 @@ if st.button("Generate Final Invoice", type="primary"):
             
             waiting_sum = pd.to_numeric(ts_df["Waiting time"], errors="coerce").sum() if "Waiting time" in ts_df.columns else 0.0
             prep_sum = pd.to_numeric(ts_df["Preparation"], errors="coerce").sum() if "Preparation" in ts_df.columns else 0.0
-            l_trpt_sum = pd.to_numeric(ts_df["L.Trpt"], errors="coerce").sum() if "L.Trpt" in ts_df.columns else 0.0
             
-            # Load the Blank Invoice Template
+            # --- PROCESS CLIENT TIMESHEET (Local Transport) ---
+            client_df = pd.read_excel(client_timesheet, sheet_name=0, skiprows=3)
+            
+            if 'Date' in client_df.columns:
+                client_df = client_df[client_df['Date'] != 'Total']
+                
+            l_trpt_sum = pd.to_numeric(client_df["L.Trpt"], errors="coerce").sum() if "L.Trpt" in client_df.columns else 0.0
+            
+            # --- LOAD AND FILL INVOICE TEMPLATE ---
             wb = load_workbook(template_excel)
             if "SG" not in wb.sheetnames:
                 st.error("The uploaded template does not contain an 'SG' tab.")
