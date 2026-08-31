@@ -106,20 +106,42 @@ def process_invoice_logic(
         safe_write(ws, local_transport_row, 4, l_trpt_sum)
 
     # --- DYNAMIC INVOICE TOTALS & TAX LOGIC ---
-    admin_row = 78 if currency == "SG" else 82
-    total_row = 80 if currency == "SG" else (86 if currency == "CN" else 84)
-
-    if include_admin_fee == "No":
-        safe_write(ws, admin_row, 3, "-")
-    else:
-        safe_write(ws, admin_row, 3, "=SUM(G41:G47,G61:G63,G31:G37, G21:G27, G51:G57)*0.1")
-
     if currency == "CN":
-        # CN has VAT at row 84
-        safe_write(ws, total_row, 3, f"=SUM(G41:G47,G61:G63,C{admin_row},C84,G31:G37, G21:G27, G51:G57)")
-    else:
-        safe_write(ws, total_row, 3, f"=SUM(G41:G47,G61:G63,C{admin_row},G31:G37, G21:G27, G51:G57)")
-    
+        if include_admin_fee == "No":
+            safe_write(ws, 82, 7, "-")
+        else:
+            safe_write(ws, 82, 7, "=0.1*G67")
+        safe_write(ws, 84, 7, "=0.06*(SUM(G28,G38,G48,G58,G67,G74,G82))")
+        safe_write(ws, 86, 7, "=SUM(G28,G38,G48,G58,G67,G74,G77:G80,G82,G84)")
+
+    elif currency == "KR":
+        if include_admin_fee == "No":
+            safe_write(ws, 82, 3, "-")
+        else:
+            safe_write(ws, 82, 3, "=0.1*(SUM(G63:G66))")
+        safe_write(ws, 84, 3, "=SUM(G41:G47,G61:G63,C82,G31:G37, G21:G27, G51:G57)")
+
+    elif currency == "SG":
+        if include_admin_fee == "No":
+            safe_write(ws, 78, 3, "-")
+        else:
+            safe_write(ws, 78, 3, "=SUM(G61:G62)*0.1")
+        safe_write(ws, 80, 3, "=SUM(G41:G47,G61:G63,C78,G31:G37, G21:G27, G51:G57)")
+
+    elif currency == "EUR":
+        if include_admin_fee == "No":
+            safe_write(ws, 82, 3, "-")
+        else:
+            safe_write(ws, 82, 3, "=0.1*(SUM(G61:G66))")
+        safe_write(ws, 84, 3, "=SUM(G41:G47,G61:G66,C82,G31:G37, G21:G27,G51:G57,G70:G73,G77:G80)")
+
+    elif currency == "USD":
+        if include_admin_fee == "No":
+            safe_write(ws, 82, 3, "-")
+        else:
+            safe_write(ws, 82, 3, "=0.1*(SUM(G63:G66))")
+        safe_write(ws, 84, 3, "=SUM(G21:G27,G31:G37,G41:G47,G51:G57,G61:G66,G70:G73,G77:G80,C82)")
+
     # Export Final Invoice
     invoice_output = io.BytesIO()
     wb.save(invoice_output)
