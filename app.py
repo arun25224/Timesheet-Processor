@@ -124,7 +124,8 @@ if st.button("Generate Final Invoice", type="primary"):
                 ws.cell(row=expense_row + 2, column=3).value = engineer_name_invoice
                 
             if local_transport_row and l_trpt_sum > 0:
-                ws.cell(row=local_transport_row, column=5).value = l_trpt_sum
+                # Changed from column 5 (Unit) to column 4 (Quantity)
+                ws.cell(row=local_transport_row, column=4).value = l_trpt_sum
             
             # Export Final Invoice
             invoice_output = io.BytesIO()
