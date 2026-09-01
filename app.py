@@ -161,7 +161,7 @@ st.set_page_config(page_title="Invoice Generator", layout="wide")
 st.title("Final Invoice Generation")
 st.write("Select your timesheet format and generate the final invoice template.")
 
-tab1, tab2 = st.tabs(["Single Timesheet Upload (Combined Excel)", "Standalone Timesheet Upload (.csv or .xlsx)"])
+tab1, tab2 = st.tabs(["Single Timesheet Upload (Combined Excel)", "Timesheet Upload (From Sana)"])
 
 # ------------------------------------------------------------
 # TAB 1: SINGLE TIMESHEET UPLOAD
