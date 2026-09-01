@@ -23,26 +23,30 @@ def process_invoice_logic(
     proj_no, svc_type, vessel_name, vessel_no, engineer_name, 
     include_admin_fee, position, currency
 ):
+    # Clean column names to remove accidental trailing spaces
+    eng_df.columns = eng_df.columns.str.strip()
+    client_df.columns = client_df.columns.str.strip()
+
     # --- PROCESS ENGINEER TIMESHEET (Work Hours) ---
     if 'Date' in eng_df.columns:
-        eng_df = eng_df[eng_df['Date'] != 'Total']
+        eng_df = eng_df[eng_df['Date'].astype(str) != 'Total']
         
-    travel = pd.to_numeric(eng_df.get("Travel", 0), errors="coerce").sum()
-    travel_ot = pd.to_numeric(eng_df.get("Travel OT", 0), errors="coerce").sum()
+    travel = pd.to_numeric(eng_df["Travel"], errors="coerce").sum() if "Travel" in eng_df.columns else 0.0
+    travel_ot = pd.to_numeric(eng_df["Travel OT"], errors="coerce").sum() if "Travel OT" in eng_df.columns else 0.0
     travel_sum = travel + travel_ot
     
-    nt_col = "Normal Time" if "Normal Time" in eng_df.columns else "NT"
-    nt_sum = pd.to_numeric(eng_df.get(nt_col, 0), errors="coerce").sum()
-    ot_sum = pd.to_numeric(eng_df.get("OT", 0), errors="coerce").sum()
+    nt_col = "Normal Time" if "Normal Time" in eng_df.columns else ("NT" if "NT" in eng_df.columns else None)
+    nt_sum = pd.to_numeric(eng_df[nt_col], errors="coerce").sum() if nt_col and nt_col in eng_df.columns else 0.0
+    ot_sum = pd.to_numeric(eng_df["OT"], errors="coerce").sum() if "OT" in eng_df.columns else 0.0
     
-    waiting_sum = pd.to_numeric(eng_df.get("Waiting time", 0), errors="coerce").sum()
-    prep_sum = pd.to_numeric(eng_df.get("Preparation", 0), errors="coerce").sum()
+    waiting_sum = pd.to_numeric(eng_df["Waiting time"], errors="coerce").sum() if "Waiting time" in eng_df.columns else 0.0
+    prep_sum = pd.to_numeric(eng_df["Preparation"], errors="coerce").sum() if "Preparation" in eng_df.columns else 0.0
     
     # --- PROCESS CLIENT TIMESHEET (Local Transport) ---
     if 'Date' in client_df.columns:
-        client_df = client_df[client_df['Date'] != 'Total']
+        client_df = client_df[client_df['Date'].astype(str) != 'Total']
         
-    l_trpt_sum = pd.to_numeric(client_df.get("L.Trpt", 0), errors="coerce").sum()
+    l_trpt_sum = pd.to_numeric(client_df["L.Trpt"], errors="coerce").sum() if "L.Trpt" in client_df.columns else 0.0
     
     # --- LOAD AND FILL INVOICE TEMPLATE ---
     if template_file.name.lower().endswith('.csv'):
@@ -161,7 +165,7 @@ st.set_page_config(page_title="Invoice Generator", layout="wide")
 st.title("Final Invoice Generation")
 st.write("Select your timesheet format and generate the final invoice template.")
 
-tab1, tab2 = st.tabs(["Single Timesheet Upload (Combined Excel)", "Timesheet Upload (From Sana)"])
+tab1, tab2 = st.tabs(["Single Timesheet Upload (Combined Excel)", "Standalone Timesheet Upload (.csv or .xlsx)"])
 
 # ------------------------------------------------------------
 # TAB 1: SINGLE TIMESHEET UPLOAD
@@ -280,7 +284,6 @@ with tab2:
                 else:
                     client_df = pd.read_excel(client_timesheet_t2, sheet_name=0)
                 
-                # Use the Client DF for both since they contain matching calculation totals in the new prompt structure
                 eng_df = client_df.copy()
                 
                 output = process_invoice_logic(
