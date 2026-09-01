@@ -31,22 +31,22 @@ def process_invoice_logic(
     if 'Date' in eng_df.columns:
         eng_df = eng_df[eng_df['Date'].astype(str) != 'Total']
         
-    travel = pd.to_numeric(eng_df["Travel"], errors="coerce").sum() if "Travel" in eng_df.columns else 0.0
-    travel_ot = pd.to_numeric(eng_df["Travel OT"], errors="coerce").sum() if "Travel OT" in eng_df.columns else 0.0
+    travel = pd.to_numeric(eng_df["Travel"], errors="coerce").fillna(0).sum() if "Travel" in eng_df.columns else 0.0
+    travel_ot = pd.to_numeric(eng_df["Travel OT"], errors="coerce").fillna(0).sum() if "Travel OT" in eng_df.columns else 0.0
     travel_sum = travel + travel_ot
     
     nt_col = "Normal Time" if "Normal Time" in eng_df.columns else ("NT" if "NT" in eng_df.columns else None)
-    nt_sum = pd.to_numeric(eng_df[nt_col], errors="coerce").sum() if nt_col and nt_col in eng_df.columns else 0.0
-    ot_sum = pd.to_numeric(eng_df["OT"], errors="coerce").sum() if "OT" in eng_df.columns else 0.0
+    nt_sum = pd.to_numeric(eng_df[nt_col], errors="coerce").fillna(0).sum() if nt_col and nt_col in eng_df.columns else 0.0
+    ot_sum = pd.to_numeric(eng_df["OT"], errors="coerce").fillna(0).sum() if "OT" in eng_df.columns else 0.0
     
-    waiting_sum = pd.to_numeric(eng_df["Waiting time"], errors="coerce").sum() if "Waiting time" in eng_df.columns else 0.0
-    prep_sum = pd.to_numeric(eng_df["Preparation"], errors="coerce").sum() if "Preparation" in eng_df.columns else 0.0
+    waiting_sum = pd.to_numeric(eng_df["Waiting time"], errors="coerce").fillna(0).sum() if "Waiting time" in eng_df.columns else 0.0
+    prep_sum = pd.to_numeric(eng_df["Preparation"], errors="coerce").fillna(0).sum() if "Preparation" in eng_df.columns else 0.0
     
     # --- PROCESS CLIENT TIMESHEET (Local Transport) ---
     if 'Date' in client_df.columns:
         client_df = client_df[client_df['Date'].astype(str) != 'Total']
         
-    l_trpt_sum = pd.to_numeric(client_df["L.Trpt"], errors="coerce").sum() if "L.Trpt" in client_df.columns else 0.0
+    l_trpt_sum = pd.to_numeric(client_df["L.Trpt"], errors="coerce").fillna(0).sum() if "L.Trpt" in client_df.columns else 0.0
     
     # --- LOAD AND FILL INVOICE TEMPLATE ---
     if template_file.name.lower().endswith('.csv'):
@@ -181,12 +181,13 @@ with tab1:
     st.markdown("### 2. Enter Information")
     c1_t1, c2_t1 = st.columns(2)
     with c1_t1:
+        work_order_t1 = st.text_input("Work Order Number", value="NeedsConfirmation", key="wo_t1")
         cust_name_t1 = st.text_input("Customer name", key="cust_name_t1")
         inv_address_t1 = st.text_input("Invoicing address", key="inv_addr_t1")
         del_address_t1 = st.text_input("Delivery address", key="del_addr_t1")
         reference_t1 = st.text_input("Reference", key="ref_t1")
-        cust_po_t1 = st.text_input("Customer PO", key="po_t1")
     with c2_t1:
+        cust_po_t1 = st.text_input("Customer PO", key="po_t1")
         proj_no_t1 = st.text_input("Project No", key="proj_t1")
         svc_type_t1 = st.text_input("Service Type", key="svc_t1")
         vessel_name_t1 = st.text_input("Vessel Name", key="vessel_t1")
@@ -227,6 +228,22 @@ with tab1:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_t1"
                 )
+                
+                wo_num = work_order_t1.strip() or "NeedsConfirmation"
+                st.download_button(
+                    label="Download Client Timesheet",
+                    data=client_df.to_csv(index=False).encode('utf-8'),
+                    file_name=f"Timesheet_Client_{wo_num}.csv",
+                    mime="text/csv",
+                    key="dl_client_t1"
+                )
+                st.download_button(
+                    label="Download Engineer Timesheet",
+                    data=eng_df.to_csv(index=False).encode('utf-8'),
+                    file_name=f"Timesheet_Engineer_{wo_num}.csv",
+                    mime="text/csv",
+                    key="dl_eng_t1"
+                )
             except KeyError as e:
                 st.error(f"Missing expected column in timesheet: {str(e)}. Please check the uploaded file format.")
             except ValueError as e:
@@ -250,12 +267,13 @@ with tab2:
     st.markdown("### 2. Enter Information")
     c1_t2, c2_t2 = st.columns(2)
     with c1_t2:
+        work_order_t2 = st.text_input("Work Order Number", value="NeedsConfirmation", key="wo_t2")
         cust_name_t2 = st.text_input("Customer name", key="cust_name_t2")
         inv_address_t2 = st.text_input("Invoicing address", key="inv_addr_t2")
         del_address_t2 = st.text_input("Delivery address", key="del_addr_t2")
         reference_t2 = st.text_input("Reference", key="ref_t2")
-        cust_po_t2 = st.text_input("Customer PO", key="po_t2")
     with c2_t2:
+        cust_po_t2 = st.text_input("Customer PO", key="po_t2")
         proj_no_t2 = st.text_input("Project No", key="proj_t2")
         svc_type_t2 = st.text_input("Service Type", key="svc_t2")
         vessel_name_t2 = st.text_input("Vessel Name", key="vessel_t2")
@@ -278,7 +296,6 @@ with tab2:
             st.error("Please upload the Client Timesheet AND the Invoice Template.")
         else:
             try:
-                # Dynamically read Client Timesheet based on extension
                 if client_timesheet_t2.name.lower().endswith('.csv'):
                     client_df = pd.read_csv(client_timesheet_t2)
                 else:
@@ -300,6 +317,22 @@ with tab2:
                     file_name=f"Invoice_{cust_name_t2 or 'Completed'}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_t2"
+                )
+                
+                wo_num = work_order_t2.strip() or "NeedsConfirmation"
+                st.download_button(
+                    label="Download Client Timesheet",
+                    data=client_df.to_csv(index=False).encode('utf-8'),
+                    file_name=f"Timesheet_Client_{wo_num}.csv",
+                    mime="text/csv",
+                    key="dl_client_t2"
+                )
+                st.download_button(
+                    label="Download Engineer Timesheet",
+                    data=eng_df.to_csv(index=False).encode('utf-8'),
+                    file_name=f"Timesheet_Engineer_{wo_num}.csv",
+                    mime="text/csv",
+                    key="dl_eng_t2"
                 )
             except KeyError as e:
                 st.error(f"Missing expected column in timesheet: {str(e)}. Please check the uploaded file format.")
