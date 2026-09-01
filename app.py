@@ -319,7 +319,7 @@ st.set_page_config(page_title="Invoice Generator", layout="wide")
 st.title("Final Invoice Generation")
 st.write("Select your timesheet format and generate the final invoice template.")
 
-tab1, tab2 = st.tabs(["Single Timesheet Upload (Combined Excel)", "Standalone Timesheet Upload (.csv or .xlsx)"])
+tab1, tab2 = st.tabs(["Single Timesheet Upload (Combined Excel)", "Sana Timesheet Upload (.csv or .xlsx)"])
 
 # ------------------------------------------------------------
 # TAB 1: SINGLE TIMESHEET UPLOAD
@@ -332,13 +332,6 @@ with tab1:
     with col2:
         template_excel_t1 = st.file_uploader("Upload Blank Invoice Template", type=["xlsx"], key="inv_upload_t1")
 
-    st.caption(
-        "This file can contain one or two worksheets, in any order and "
-        "with any tab names. The app automatically detects which sheet "
-        "is the Engineer-style table and which is the Client-style "
-        "table based on their columns, rather than requiring tabs to "
-        "be named 'Engineer' or 'Client'."
-    )
 
     st.markdown("### 2. Enter Information")
     c1_t1, c2_t1 = st.columns(2)
@@ -423,15 +416,6 @@ with tab2:
             type=["xlsx"],
             key="inv_upload_t2"
         )
-
-    st.caption(
-        "Only the Client Timesheet is required. It is used for both the "
-        "invoice hour figures (Travel, Normal Time, OT, Waiting Time, "
-        "Preparation) and Local Transport. The first worksheet in the "
-        "uploaded file is read automatically, regardless of its tab "
-        "name, and the real header row is detected automatically even "
-        "if the file contains a title row or a blank leading column."
-    )
 
     st.markdown("### 2. Enter Information")
 
