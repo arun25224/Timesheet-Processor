@@ -154,10 +154,10 @@ def process_invoice_logic(
 # ============================================================
 st.set_page_config(page_title="Invoice Generator", layout="wide")
 
-st.title("Final Invoice Generation")
+st.title("Invoice Generation")
 st.write("Select your timesheet format and generate the final invoice template.")
 
-tab1, tab2 = st.tabs(["Single Timesheet Upload (Combined)", "Dual Timesheet Upload (Separate)"])
+tab1, tab2 = st.tabs(["Single Timesheet Upload", "Dual Timesheet Upload (From SANA)"])
 
 # ------------------------------------------------------------
 # TAB 1: SINGLE TIMESHEET UPLOAD
@@ -248,7 +248,7 @@ with tab2:
         svc_type_t2 = st.text_input("Service Type", key="svc_t2")
         vessel_name_t2 = st.text_input("Vessel Name", key="vessel_t2")
         vessel_no_t2 = st.text_input("Vessel No (if applicable)", key="vessel_no_t2")
-        engineer_name_invoice_t2 = st.text_input("Engineer Name (For Expenses)", key="eng_name_t2")
+        engineer_name_invoice_t2 = st.text_input("Engineer Name", key="eng_name_t2")
 
     st.markdown("### 3. Service & Role Details")
     c3_t2, c4_t2, c5_t2 = st.columns(3)
@@ -263,7 +263,7 @@ with tab2:
 
     if st.button("Generate Final Invoice", type="primary", key="btn_t2"):
         if not engineer_timesheet_t2 or not client_timesheet_t2 or not template_excel_t2:
-            st.error("Please upload the Engineer Timesheet, Client Timesheet, AND the Invoice Template.")
+            st.error("Please upload the Engineer Timesheet, Client Timesheet, and the Invoice Template.")
         else:
             try:
                 eng_df = pd.read_excel(engineer_timesheet_t2, sheet_name=0, skiprows=3)
