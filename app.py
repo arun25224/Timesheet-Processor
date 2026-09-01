@@ -1,4 +1,4 @@
-code = '''import streamlit as st
+code = r'''import streamlit as st
 import pandas as pd
 import io
 import zipfile
@@ -26,31 +26,12 @@ def get_column(df, possible_names):
     return None
 
 
-def load_timesheet_table(uploaded_file, sheet_name=None):
+def parse_raw_table(raw):
     """
-    Robustly loads a timesheet table from an uploaded CSV or Excel file.
-
-    Handles files that contain:
-      - A blank leading column
-      - A title row before the real header row
-      - Blank spacer rows
-
-    Automatically detects the real header row by locating the row
-    that contains a "Date" cell, then builds a clean DataFrame from
-    that point onward, dropping any blank/unnamed columns.
+    Given a raw DataFrame (header=None) that may contain a blank leading
+    column, a title row, and blank spacer rows, locate the real header
+    row (the one containing a 'Date' cell) and return a clean DataFrame.
     """
-    is_csv = uploaded_file.name.lower().endswith(".csv")
-
-    # Read raw content with no header assumptions first.
-    if is_csv:
-        raw = pd.read_csv(uploaded_file, header=None, dtype=str)
-    else:
-        if sheet_name is not None:
-            raw = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None, dtype=str)
-        else:
-            raw = pd.read_excel(uploaded_file, sheet_name=0, header=None, dtype=str)
-
-    # Locate the header row: the first row containing a cell equal to "date".
     header_row_idx = None
     max_scan_rows = min(20, len(raw))
 
@@ -61,27 +42,119 @@ def load_timesheet_table(uploaded_file, sheet_name=None):
             break
 
     if header_row_idx is None:
+        return None
+
+    header = raw.iloc[header_row_idx].astype(str).str.strip()
+    data = raw.iloc[header_row_idx + 1:].copy()
+    data.columns = header
+
+    valid_cols = [
+        c for c in data.columns
+        if str(c).strip() != "" and str(c).strip().lower() != "nan"
+    ]
+    data = data[valid_cols]
+    data = data.dropna(how="all").reset_index(drop=True)
+
+    return data
+
+
+def load_timesheet_table(uploaded_file, sheet_name=None):
+    """
+    Robustly loads a single timesheet table from an uploaded CSV or Excel
+    file, automatically detecting the real header row regardless of blank
+    leading columns or title rows.
+    """
+    is_csv = uploaded_file.name.lower().endswith(".csv")
+
+    if is_csv:
+        raw = pd.read_csv(uploaded_file, header=None, dtype=str)
+    else:
+        target_sheet = sheet_name if sheet_name is not None else 0
+        raw = pd.read_excel(uploaded_file, sheet_name=target_sheet, header=None, dtype=str)
+
+    data = parse_raw_table(raw)
+
+    if data is None:
         raise ValueError(
             "Could not find the timesheet header row (expected a column "
             "labeled 'Date'). Please check that the uploaded file is a "
             "valid timesheet export."
         )
 
-    header = raw.iloc[header_row_idx].astype(str).str.strip()
-    data = raw.iloc[header_row_idx + 1:].copy()
-    data.columns = header
-
-    # Drop columns with blank, "nan", or unnamed headers (e.g. the leading blank column).
-    valid_cols = [
-        c for c in data.columns
-        if str(c).strip() != "" and str(c).strip().lower() != "nan"
-    ]
-    data = data[valid_cols]
-
-    # Drop fully blank rows and reset index.
-    data = data.dropna(how="all").reset_index(drop=True)
-
     return data
+
+
+def load_engineer_and_client_tables(uploaded_file):
+    """
+    Loads the Engineer-style and Client-style timesheet tables from a
+    combined Excel workbook WITHOUT relying on specific tab names such
+    as 'Engineer' or 'Client'.
+
+    Instead, every sheet in the workbook is inspected, and sheets are
+    matched based on the columns they actually contain:
+      - Engineer-style sheets contain 'Travel OT' or 'Normal Time'.
+      - Client-style sheets contain 'L.Trpt'.
+
+    If the workbook only has one sheet, that same sheet is used for
+    both the engineer-side and client-side figures.
+    """
+    if uploaded_file.name.lower().endswith(".csv"):
+        client_df = load_timesheet_table(uploaded_file)
+        eng_df = client_df.copy()
+        return eng_df, client_df
+
+    xls = pd.ExcelFile(uploaded_file)
+    sheet_names = xls.sheet_names
+
+    eng_df = None
+    client_df = None
+
+    for sheet in sheet_names:
+        try:
+            raw = pd.read_excel(xls, sheet_name=sheet, header=None, dtype=str)
+            parsed = parse_raw_table(raw)
+        except Exception:
+            parsed = None
+
+        if parsed is None:
+            continue
+
+        cols = set(parsed.columns)
+
+        if eng_df is None and ({"Travel OT", "Normal Time"} & cols):
+            eng_df = parsed
+
+        if client_df is None and ("L.Trpt" in cols):
+            client_df = parsed
+
+    # If only one sheet exists, or no distinct match was found,
+    # fall back to using the first parsable sheet for whichever
+    # table is still missing.
+    if eng_df is None or client_df is None:
+        fallback_df = None
+        for sheet in sheet_names:
+            try:
+                raw = pd.read_excel(xls, sheet_name=sheet, header=None, dtype=str)
+                parsed = parse_raw_table(raw)
+            except Exception:
+                parsed = None
+
+            if parsed is not None:
+                fallback_df = parsed
+                break
+
+        if fallback_df is None:
+            raise ValueError(
+                "Could not find a usable timesheet table in the uploaded "
+                "file. Please check that it contains a column labeled 'Date'."
+            )
+
+        if eng_df is None:
+            eng_df = fallback_df
+        if client_df is None:
+            client_df = fallback_df
+
+    return eng_df, client_df
 
 
 def process_invoice_logic(
@@ -259,6 +332,14 @@ with tab1:
     with col2:
         template_excel_t1 = st.file_uploader("Upload Blank Invoice Template", type=["xlsx"], key="inv_upload_t1")
 
+    st.caption(
+        "This file can contain one or two worksheets, in any order and "
+        "with any tab names. The app automatically detects which sheet "
+        "is the Engineer-style table and which is the Client-style "
+        "table based on their columns, rather than requiring tabs to "
+        "be named 'Engineer' or 'Client'."
+    )
+
     st.markdown("### 2. Enter Information")
     c1_t1, c2_t1 = st.columns(2)
     with c1_t1:
@@ -291,8 +372,7 @@ with tab1:
             st.error("Please upload the Processed Timesheet AND the Invoice Template.")
         else:
             try:
-                eng_df = load_timesheet_table(timesheet_excel_t1, sheet_name="Engineer")
-                client_df = load_timesheet_table(timesheet_excel_t1, sheet_name="Client")
+                eng_df, client_df = load_engineer_and_client_tables(timesheet_excel_t1)
 
                 output = process_invoice_logic(
                     eng_df, client_df, template_excel_t1,
@@ -328,7 +408,7 @@ with tab1:
             except KeyError as e:
                 st.error(f"Missing expected column in timesheet: {str(e)}. Please check the uploaded file format.")
             except ValueError as e:
-                st.error(f"Value error encountered: {str(e)}. This might be due to a missing tab in the template.")
+                st.error(f"Value error encountered: {str(e)}")
             except zipfile.BadZipFile:
                 st.error("One of the uploaded files is not a valid Excel file or is corrupted.")
             except Exception as e:
@@ -360,9 +440,9 @@ with tab2:
         "Only the Client Timesheet is required. It is used for both the "
         "invoice hour figures (Travel, Normal Time, OT, Waiting Time, "
         "Preparation) and Local Transport. The first worksheet in the "
-        "uploaded file is read automatically, and the real header row is "
-        "detected automatically even if the file contains a title row or "
-        "a blank leading column."
+        "uploaded file is read automatically, regardless of its tab "
+        "name, and the real header row is detected automatically even "
+        "if the file contains a title row or a blank leading column."
     )
 
     st.markdown("### 2. Enter Information")
@@ -404,18 +484,9 @@ with tab2:
             st.error("Please upload the Client Timesheet and the Invoice Template.")
         else:
             try:
-                # --------------------------------------------
-                # READ CLIENT TIMESHEET (ONLY REQUIRED SOURCE)
-                # --------------------------------------------
                 client_df = load_timesheet_table(client_timesheet_t2)
-
-                # The Client Timesheet is used for both the hour
-                # figures and the Local Transport figure.
                 eng_df = client_df.copy()
 
-                # --------------------------------------------
-                # VALIDATE CLIENT TIMESHEET
-                # --------------------------------------------
                 expected_hour_columns = {
                     "Travel", "Travel OT", "Normal Time", "NT", "OT",
                     "Waiting Time", "Waiting time", "Preparation"
@@ -431,9 +502,6 @@ with tab2:
                         + ", ".join(str(c) for c in client_df.columns)
                     )
 
-                # --------------------------------------------
-                # GENERATE INVOICE
-                # --------------------------------------------
                 output = process_invoice_logic(
                     eng_df, client_df, template_excel_t2,
                     cust_name_t2, inv_address_t2, del_address_t2, reference_t2, cust_po_t2,
