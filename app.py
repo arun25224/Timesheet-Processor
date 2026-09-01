@@ -317,7 +317,7 @@ def process_invoice_logic(
 st.set_page_config(page_title="Invoice Generator", layout="wide")
 
 st.title("Final Invoice Generation")
-st.write("Select your timesheet format and generate the final invoice template.")
+st.write("Select your timesheet format and generate the final invoice.")
 
 tab1, tab2 = st.tabs(["Single Timesheet Upload (Combined Excel)", "Sana Timesheet Upload (.csv or .xlsx)"])
 
