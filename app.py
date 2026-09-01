@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
+import zipfile
 from openpyxl import load_workbook
 
 # ============================================================
@@ -26,22 +27,22 @@ def process_invoice_logic(
     if 'Date' in eng_df.columns:
         eng_df = eng_df[eng_df['Date'] != 'Total']
         
-    travel = pd.to_numeric(eng_df["Travel"], errors="coerce").sum() if "Travel" in eng_df.columns else 0.0
-    travel_ot = pd.to_numeric(eng_df["Travel OT"], errors="coerce").sum() if "Travel OT" in eng_df.columns else 0.0
+    travel = pd.to_numeric(eng_df.get("Travel", 0), errors="coerce").sum()
+    travel_ot = pd.to_numeric(eng_df.get("Travel OT", 0), errors="coerce").sum()
     travel_sum = travel + travel_ot
     
     nt_col = "Normal Time" if "Normal Time" in eng_df.columns else "NT"
-    nt_sum = pd.to_numeric(eng_df[nt_col], errors="coerce").sum() if nt_col in eng_df.columns else 0.0
-    ot_sum = pd.to_numeric(eng_df["OT"], errors="coerce").sum() if "OT" in eng_df.columns else 0.0
+    nt_sum = pd.to_numeric(eng_df.get(nt_col, 0), errors="coerce").sum()
+    ot_sum = pd.to_numeric(eng_df.get("OT", 0), errors="coerce").sum()
     
-    waiting_sum = pd.to_numeric(eng_df["Waiting time"], errors="coerce").sum() if "Waiting time" in eng_df.columns else 0.0
-    prep_sum = pd.to_numeric(eng_df["Preparation"], errors="coerce").sum() if "Preparation" in eng_df.columns else 0.0
+    waiting_sum = pd.to_numeric(eng_df.get("Waiting time", 0), errors="coerce").sum()
+    prep_sum = pd.to_numeric(eng_df.get("Preparation", 0), errors="coerce").sum()
     
     # --- PROCESS CLIENT TIMESHEET (Local Transport) ---
     if 'Date' in client_df.columns:
         client_df = client_df[client_df['Date'] != 'Total']
         
-    l_trpt_sum = pd.to_numeric(client_df["L.Trpt"], errors="coerce").sum() if "L.Trpt" in client_df.columns else 0.0
+    l_trpt_sum = pd.to_numeric(client_df.get("L.Trpt", 0), errors="coerce").sum()
     
     # --- LOAD AND FILL INVOICE TEMPLATE ---
     wb = load_workbook(template_file)
@@ -154,10 +155,10 @@ def process_invoice_logic(
 # ============================================================
 st.set_page_config(page_title="Invoice Generator", layout="wide")
 
-st.title("Invoice Generation")
-st.write("Select your timesheet format and generate the final invoice.")
+st.title("Final Invoice Generation")
+st.write("Select your timesheet format and generate the final invoice template.")
 
-tab1, tab2 = st.tabs(["Single Timesheet Upload", "Dual Timesheet Upload"])
+tab1, tab2 = st.tabs(["Single Timesheet Upload (Combined)", "Dual Timesheet Upload (Separate)"])
 
 # ------------------------------------------------------------
 # TAB 1: SINGLE TIMESHEET UPLOAD
@@ -211,7 +212,7 @@ with tab1:
                     include_admin_fee_t1, position_t1, currency_t1
                 )
                 
-                st.success("Invoice Generated.")
+                st.success("Invoice Generated Successfully")
                 st.download_button(
                     label="Download Final Invoice",
                     data=output,
@@ -219,8 +220,14 @@ with tab1:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_t1"
                 )
+            except KeyError as e:
+                st.error(f"Missing expected column in timesheet: {str(e)}. Please check the uploaded file format.")
+            except ValueError as e:
+                st.error(f"Value error encountered: {str(e)}. This might be due to a missing tab in the template.")
+            except zipfile.BadZipFile:
+                st.error("One of the uploaded files is not a valid Excel file or is corrupted.")
             except Exception as e:
-                st.error(f"An error occurred while processing the invoice: {str(e)}")
+                st.error(f"An unexpected error occurred while processing the invoice: {str(e)}")
 
 # ------------------------------------------------------------
 # TAB 2: DUAL TIMESHEET UPLOAD
@@ -263,7 +270,7 @@ with tab2:
 
     if st.button("Generate Final Invoice", type="primary", key="btn_t2"):
         if not engineer_timesheet_t2 or not client_timesheet_t2 or not template_excel_t2:
-            st.error("Please upload the Engineer Timesheet, Client Timesheet, and the Invoice Template.")
+            st.error("Please upload the Engineer Timesheet, Client Timesheet, AND the Invoice Template.")
         else:
             try:
                 eng_df = pd.read_excel(engineer_timesheet_t2, sheet_name=0, skiprows=3)
@@ -284,5 +291,11 @@ with tab2:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_t2"
                 )
+            except KeyError as e:
+                st.error(f"Missing expected column in timesheet: {str(e)}. Please check the uploaded file format.")
+            except ValueError as e:
+                st.error(f"Value error encountered: {str(e)}. This might be due to a missing tab in the template.")
+            except zipfile.BadZipFile:
+                st.error("One of the uploaded files is not a valid Excel file or is corrupted.")
             except Exception as e:
-                st.error(f"An error occurred while processing the invoice: {str(e)}")
+                st.error(f"An unexpected error occurred while processing the invoice: {str(e)}")
