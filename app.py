@@ -1,4 +1,4 @@
-import streamlit as st
+code = '''import streamlit as st
 import pandas as pd
 import io
 import zipfile
@@ -37,8 +37,8 @@ def process_invoice_logic(
     client_df.columns = client_df.columns.astype(str).str.strip()
 
     # --- PROCESS ENGINEER TIMESHEET (Work Hours) ---
-    if 'Date' in eng_df.columns:
-        eng_df = eng_df[eng_df['Date'].astype(str) != 'Total']
+    if "Date" in eng_df.columns:
+        eng_df = eng_df[eng_df["Date"].astype(str) != "Total"]
 
     travel_col = get_column(eng_df, ["Travel"])
     travel = pd.to_numeric(eng_df[travel_col], errors="coerce").fillna(0).sum() if travel_col else 0.0
@@ -61,14 +61,14 @@ def process_invoice_logic(
     prep_sum = pd.to_numeric(eng_df[prep_col], errors="coerce").fillna(0).sum() if prep_col else 0.0
 
     # --- PROCESS CLIENT TIMESHEET (Local Transport) ---
-    if 'Date' in client_df.columns:
-        client_df = client_df[client_df['Date'].astype(str) != 'Total']
+    if "Date" in client_df.columns:
+        client_df = client_df[client_df["Date"].astype(str) != "Total"]
 
     ltrpt_col = get_column(client_df, ["L.Trpt"])
     l_trpt_sum = pd.to_numeric(client_df[ltrpt_col], errors="coerce").fillna(0).sum() if ltrpt_col else 0.0
 
     # --- LOAD AND FILL INVOICE TEMPLATE ---
-    if template_file.name.lower().endswith('.csv'):
+    if template_file.name.lower().endswith(".csv"):
         raise ValueError("The Invoice Template must be an Excel file (.xlsx) to preserve formulas and formatting.")
 
     wb = load_workbook(template_file)
@@ -255,14 +255,14 @@ with tab1:
                 wo_num = work_order_t1.strip() or "NeedsConfirmation"
                 st.download_button(
                     label="Download Client Timesheet",
-                    data=client_df.to_csv(index=False).encode('utf-8'),
+                    data=client_df.to_csv(index=False).encode("utf-8"),
                     file_name=f"Timesheet_Client_{wo_num}.csv",
                     mime="text/csv",
                     key="dl_client_t1"
                 )
                 st.download_button(
                     label="Download Engineer Timesheet",
-                    data=eng_df.to_csv(index=False).encode('utf-8'),
+                    data=eng_df.to_csv(index=False).encode("utf-8"),
                     file_name=f"Timesheet_Engineer_{wo_num}.csv",
                     mime="text/csv",
                     key="dl_eng_t1"
@@ -285,17 +285,17 @@ with tab2:
     col1_t2, col2_t2, col3_t2 = st.columns(3)
 
     with col1_t2:
-        engineer_timesheet_t2 = st.file_uploader(
-            "Upload Engineer Timesheet",
+        client_timesheet_t2 = st.file_uploader(
+            "Upload Client Timesheet (Required)",
             type=["xlsx", "csv"],
-            key="eng_upload_t2"
+            key="cli_upload_t2"
         )
 
     with col2_t2:
-        client_timesheet_t2 = st.file_uploader(
-            "Upload Client Timesheet (Optional — used for Local Transport)",
+        engineer_timesheet_t2 = st.file_uploader(
+            "Upload Engineer Timesheet (Optional)",
             type=["xlsx", "csv"],
-            key="cli_upload_t2"
+            key="eng_upload_t2"
         )
 
     with col3_t2:
@@ -306,8 +306,11 @@ with tab2:
         )
 
     st.caption(
-        "The first worksheet in each uploaded Excel timesheet will be read "
-        "automatically. The worksheet does not need to be named Engineer or Client."
+        "The Client Timesheet is required and is used for Local Transport as well "
+        "as the base hour figures. The Engineer Timesheet is optional; upload it "
+        "only if you want engineer-specific figures (e.g. Travel OT, Normal Time) "
+        "used instead of the Client Timesheet figures. The first worksheet in each "
+        "uploaded Excel file is read automatically, regardless of its tab name."
     )
 
     st.markdown("### 2. Enter Information")
@@ -345,51 +348,52 @@ with tab2:
         ], key="pos_t2")
 
     if st.button("Generate Final Invoice", type="primary", key="btn_t2"):
-        if not engineer_timesheet_t2 or not template_excel_t2:
-            st.error("Please upload the Engineer Timesheet and the Invoice Template.")
+        if not client_timesheet_t2 or not template_excel_t2:
+            st.error("Please upload the Client Timesheet and the Invoice Template.")
         else:
             try:
                 # --------------------------------------------
-                # READ ENGINEER TIMESHEET
+                # READ CLIENT TIMESHEET (MANDATORY)
                 # --------------------------------------------
-                # For Excel files, sheet_name=0 reads the first
-                # worksheet regardless of the worksheet name.
-                if engineer_timesheet_t2.name.lower().endswith(".csv"):
-                    eng_df = pd.read_csv(engineer_timesheet_t2)
+                # sheet_name=0 reads the first worksheet
+                # regardless of its tab name.
+                if client_timesheet_t2.name.lower().endswith(".csv"):
+                    client_df = pd.read_csv(client_timesheet_t2)
                 else:
-                    eng_df = pd.read_excel(engineer_timesheet_t2, sheet_name=0)
+                    client_df = pd.read_excel(client_timesheet_t2, sheet_name=0)
 
-                eng_df.columns = eng_df.columns.astype(str).str.strip()
+                client_df.columns = client_df.columns.astype(str).str.strip()
 
                 # --------------------------------------------
-                # READ OPTIONAL CLIENT TIMESHEET
+                # READ OPTIONAL ENGINEER TIMESHEET
                 # --------------------------------------------
-                if client_timesheet_t2 is not None:
-                    if client_timesheet_t2.name.lower().endswith(".csv"):
-                        client_df = pd.read_csv(client_timesheet_t2)
+                if engineer_timesheet_t2 is not None:
+                    if engineer_timesheet_t2.name.lower().endswith(".csv"):
+                        eng_df = pd.read_csv(engineer_timesheet_t2)
                     else:
-                        client_df = pd.read_excel(client_timesheet_t2, sheet_name=0)
+                        eng_df = pd.read_excel(engineer_timesheet_t2, sheet_name=0)
 
-                    client_df.columns = client_df.columns.astype(str).str.strip()
+                    eng_df.columns = eng_df.columns.astype(str).str.strip()
                 else:
-                    # No Client Timesheet uploaded -> Local Transport defaults to 0
-                    client_df = pd.DataFrame(columns=["Date", "L.Trpt"])
+                    # No Engineer Timesheet uploaded -> fall back to
+                    # using the Client Timesheet for engineer hour figures.
+                    eng_df = client_df.copy()
 
                 # --------------------------------------------
-                # VALIDATE ENGINEER TIMESHEET
+                # VALIDATE CLIENT TIMESHEET (MANDATORY SOURCE)
                 # --------------------------------------------
                 expected_hour_columns = {
                     "Travel", "Travel OT", "Normal Time", "NT", "OT",
                     "Waiting Time", "Waiting time", "Preparation"
                 }
 
-                detected_hour_columns = set(eng_df.columns) & expected_hour_columns
+                detected_hour_columns = set(client_df.columns) & expected_hour_columns
 
                 if not detected_hour_columns:
                     raise ValueError(
-                        "No Engineer Timesheet hour columns were found. "
-                        "Expected columns such as Travel, Travel OT, Normal Time, "
-                        "NT, OT, Waiting Time, or Preparation."
+                        "No timesheet hour columns were found in the Client Timesheet. "
+                        "Expected columns such as Travel, Normal Time, NT, OT, "
+                        "Waiting Time, or Preparation."
                     )
 
                 # --------------------------------------------
@@ -413,10 +417,16 @@ with tab2:
                 )
 
             except KeyError as e:
-                st.error(f"Missing expected column in the Engineer Timesheet: {str(e)}. Please check the uploaded file format.")
+                st.error(f"Missing expected column in timesheet: {str(e)}. Please check the uploaded file format.")
             except ValueError as e:
                 st.error(f"Value error encountered: {str(e)}")
             except zipfile.BadZipFile:
                 st.error("One of the uploaded files is not a valid Excel file or is corrupted.")
             except Exception as e:
                 st.error(f"An unexpected error occurred while processing the invoice: {str(e)}")
+'''
+
+with open("app.py", "w") as f:
+    f.write(code)
+
+print("File written, length:", len(code))
