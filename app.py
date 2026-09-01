@@ -382,29 +382,17 @@ with tab1:
                 )
 
                 st.success("Invoice Generated Successfully")
+
+                wo_num_t1 = work_order_t1.strip() or "NeedsConfirmation"
+
                 st.download_button(
                     label="Download Final Invoice",
                     data=output,
-                    file_name=f"Invoice_{cust_name_t1 or 'Completed'}.xlsx",
+                    file_name=f"Client_Invoice_{wo_num_t1}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_t1"
                 )
 
-                wo_num = work_order_t1.strip() or "NeedsConfirmation"
-                st.download_button(
-                    label="Download Client Timesheet",
-                    data=client_df.to_csv(index=False).encode("utf-8"),
-                    file_name=f"Timesheet_Client_{wo_num}.csv",
-                    mime="text/csv",
-                    key="dl_client_t1"
-                )
-                st.download_button(
-                    label="Download Engineer Timesheet",
-                    data=eng_df.to_csv(index=False).encode("utf-8"),
-                    file_name=f"Timesheet_Engineer_{wo_num}.csv",
-                    mime="text/csv",
-                    key="dl_eng_t1"
-                )
             except KeyError as e:
                 st.error(f"Missing expected column in timesheet: {str(e)}. Please check the uploaded file format.")
             except ValueError as e:
@@ -511,10 +499,12 @@ with tab2:
 
                 st.success("Invoice Generated Successfully")
 
+                wo_num_t2 = work_order_t2.strip() or "NeedsConfirmation"
+
                 st.download_button(
                     label="Download Final Invoice",
                     data=output,
-                    file_name=f"Invoice_{cust_name_t2.strip() or 'Completed'}.xlsx",
+                    file_name=f"Client_Invoice_{wo_num_t2}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_t2"
                 )
