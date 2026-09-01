@@ -26,6 +26,64 @@ def get_column(df, possible_names):
     return None
 
 
+def load_timesheet_table(uploaded_file, sheet_name=None):
+    """
+    Robustly loads a timesheet table from an uploaded CSV or Excel file.
+
+    Handles files that contain:
+      - A blank leading column
+      - A title row before the real header row
+      - Blank spacer rows
+
+    Automatically detects the real header row by locating the row
+    that contains a "Date" cell, then builds a clean DataFrame from
+    that point onward, dropping any blank/unnamed columns.
+    """
+    is_csv = uploaded_file.name.lower().endswith(".csv")
+
+    # Read raw content with no header assumptions first.
+    if is_csv:
+        raw = pd.read_csv(uploaded_file, header=None, dtype=str)
+    else:
+        if sheet_name is not None:
+            raw = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None, dtype=str)
+        else:
+            raw = pd.read_excel(uploaded_file, sheet_name=0, header=None, dtype=str)
+
+    # Locate the header row: the first row containing a cell equal to "date".
+    header_row_idx = None
+    max_scan_rows = min(20, len(raw))
+
+    for i in range(max_scan_rows):
+        row_values = raw.iloc[i].astype(str).str.strip().str.lower()
+        if (row_values == "date").any():
+            header_row_idx = i
+            break
+
+    if header_row_idx is None:
+        raise ValueError(
+            "Could not find the timesheet header row (expected a column "
+            "labeled 'Date'). Please check that the uploaded file is a "
+            "valid timesheet export."
+        )
+
+    header = raw.iloc[header_row_idx].astype(str).str.strip()
+    data = raw.iloc[header_row_idx + 1:].copy()
+    data.columns = header
+
+    # Drop columns with blank, "nan", or unnamed headers (e.g. the leading blank column).
+    valid_cols = [
+        c for c in data.columns
+        if str(c).strip() != "" and str(c).strip().lower() != "nan"
+    ]
+    data = data[valid_cols]
+
+    # Drop fully blank rows and reset index.
+    data = data.dropna(how="all").reset_index(drop=True)
+
+    return data
+
+
 def process_invoice_logic(
     eng_df, client_df, template_file,
     cust_name, inv_address, del_address, reference, cust_po,
@@ -36,7 +94,7 @@ def process_invoice_logic(
     eng_df.columns = eng_df.columns.astype(str).str.strip()
     client_df.columns = client_df.columns.astype(str).str.strip()
 
-    # --- PROCESS ENGINEER TIMESHEET (Work Hours) ---
+    # --- PROCESS ENGINEER-SIDE HOURS ---
     if "Date" in eng_df.columns:
         eng_df = eng_df[eng_df["Date"].astype(str) != "Total"]
 
@@ -60,7 +118,7 @@ def process_invoice_logic(
     prep_col = get_column(eng_df, ["Preparation"])
     prep_sum = pd.to_numeric(eng_df[prep_col], errors="coerce").fillna(0).sum() if prep_col else 0.0
 
-    # --- PROCESS CLIENT TIMESHEET (Local Transport) ---
+    # --- PROCESS CLIENT-SIDE LOCAL TRANSPORT ---
     if "Date" in client_df.columns:
         client_df = client_df[client_df["Date"].astype(str) != "Total"]
 
@@ -233,8 +291,8 @@ with tab1:
             st.error("Please upload the Processed Timesheet AND the Invoice Template.")
         else:
             try:
-                eng_df = pd.read_excel(timesheet_excel_t1, sheet_name="Engineer", skiprows=2)
-                client_df = pd.read_excel(timesheet_excel_t1, sheet_name="Client", skiprows=2)
+                eng_df = load_timesheet_table(timesheet_excel_t1, sheet_name="Engineer")
+                client_df = load_timesheet_table(timesheet_excel_t1, sheet_name="Client")
 
                 output = process_invoice_logic(
                     eng_df, client_df, template_excel_t1,
@@ -277,12 +335,12 @@ with tab1:
                 st.error(f"An unexpected error occurred while processing the invoice: {str(e)}")
 
 # ------------------------------------------------------------
-# TAB 2: STANDALONE TIMESHEET UPLOAD
+# TAB 2: STANDALONE TIMESHEET UPLOAD (CLIENT TIMESHEET ONLY)
 # ------------------------------------------------------------
 with tab2:
     st.markdown("### 1. Upload Required Files")
 
-    col1_t2, col2_t2, col3_t2 = st.columns(3)
+    col1_t2, col2_t2 = st.columns(2)
 
     with col1_t2:
         client_timesheet_t2 = st.file_uploader(
@@ -292,13 +350,6 @@ with tab2:
         )
 
     with col2_t2:
-        engineer_timesheet_t2 = st.file_uploader(
-            "Upload Engineer Timesheet (Optional)",
-            type=["xlsx", "csv"],
-            key="eng_upload_t2"
-        )
-
-    with col3_t2:
         template_excel_t2 = st.file_uploader(
             "Upload Blank Invoice Template",
             type=["xlsx"],
@@ -306,11 +357,12 @@ with tab2:
         )
 
     st.caption(
-        "The Client Timesheet is required and is used for Local Transport as well "
-        "as the base hour figures. The Engineer Timesheet is optional; upload it "
-        "only if you want engineer-specific figures (e.g. Travel OT, Normal Time) "
-        "used instead of the Client Timesheet figures. The first worksheet in each "
-        "uploaded Excel file is read automatically, regardless of its tab name."
+        "Only the Client Timesheet is required. It is used for both the "
+        "invoice hour figures (Travel, Normal Time, OT, Waiting Time, "
+        "Preparation) and Local Transport. The first worksheet in the "
+        "uploaded file is read automatically, and the real header row is "
+        "detected automatically even if the file contains a title row or "
+        "a blank leading column."
     )
 
     st.markdown("### 2. Enter Information")
@@ -353,34 +405,16 @@ with tab2:
         else:
             try:
                 # --------------------------------------------
-                # READ CLIENT TIMESHEET (MANDATORY)
+                # READ CLIENT TIMESHEET (ONLY REQUIRED SOURCE)
                 # --------------------------------------------
-                # sheet_name=0 reads the first worksheet
-                # regardless of its tab name.
-                if client_timesheet_t2.name.lower().endswith(".csv"):
-                    client_df = pd.read_csv(client_timesheet_t2)
-                else:
-                    client_df = pd.read_excel(client_timesheet_t2, sheet_name=0)
+                client_df = load_timesheet_table(client_timesheet_t2)
 
-                client_df.columns = client_df.columns.astype(str).str.strip()
+                # The Client Timesheet is used for both the hour
+                # figures and the Local Transport figure.
+                eng_df = client_df.copy()
 
                 # --------------------------------------------
-                # READ OPTIONAL ENGINEER TIMESHEET
-                # --------------------------------------------
-                if engineer_timesheet_t2 is not None:
-                    if engineer_timesheet_t2.name.lower().endswith(".csv"):
-                        eng_df = pd.read_csv(engineer_timesheet_t2)
-                    else:
-                        eng_df = pd.read_excel(engineer_timesheet_t2, sheet_name=0)
-
-                    eng_df.columns = eng_df.columns.astype(str).str.strip()
-                else:
-                    # No Engineer Timesheet uploaded -> fall back to
-                    # using the Client Timesheet for engineer hour figures.
-                    eng_df = client_df.copy()
-
-                # --------------------------------------------
-                # VALIDATE CLIENT TIMESHEET (MANDATORY SOURCE)
+                # VALIDATE CLIENT TIMESHEET
                 # --------------------------------------------
                 expected_hour_columns = {
                     "Travel", "Travel OT", "Normal Time", "NT", "OT",
@@ -393,7 +427,8 @@ with tab2:
                     raise ValueError(
                         "No timesheet hour columns were found in the Client Timesheet. "
                         "Expected columns such as Travel, Normal Time, NT, OT, "
-                        "Waiting Time, or Preparation."
+                        "Waiting Time, or Preparation. Detected columns were: "
+                        + ", ".join(str(c) for c in client_df.columns)
                     )
 
                 # --------------------------------------------
