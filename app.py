@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
+import zipfile
 from openpyxl import load_workbook
 
 # ============================================================
@@ -26,24 +27,27 @@ def process_invoice_logic(
     if 'Date' in eng_df.columns:
         eng_df = eng_df[eng_df['Date'] != 'Total']
         
-    travel = pd.to_numeric(eng_df["Travel"], errors="coerce").sum() if "Travel" in eng_df.columns else 0.0
-    travel_ot = pd.to_numeric(eng_df["Travel OT"], errors="coerce").sum() if "Travel OT" in eng_df.columns else 0.0
+    travel = pd.to_numeric(eng_df.get("Travel", 0), errors="coerce").sum()
+    travel_ot = pd.to_numeric(eng_df.get("Travel OT", 0), errors="coerce").sum()
     travel_sum = travel + travel_ot
     
     nt_col = "Normal Time" if "Normal Time" in eng_df.columns else "NT"
-    nt_sum = pd.to_numeric(eng_df[nt_col], errors="coerce").sum() if nt_col in eng_df.columns else 0.0
-    ot_sum = pd.to_numeric(eng_df["OT"], errors="coerce").sum() if "OT" in eng_df.columns else 0.0
+    nt_sum = pd.to_numeric(eng_df.get(nt_col, 0), errors="coerce").sum()
+    ot_sum = pd.to_numeric(eng_df.get("OT", 0), errors="coerce").sum()
     
-    waiting_sum = pd.to_numeric(eng_df["Waiting time"], errors="coerce").sum() if "Waiting time" in eng_df.columns else 0.0
-    prep_sum = pd.to_numeric(eng_df["Preparation"], errors="coerce").sum() if "Preparation" in eng_df.columns else 0.0
+    waiting_sum = pd.to_numeric(eng_df.get("Waiting time", 0), errors="coerce").sum()
+    prep_sum = pd.to_numeric(eng_df.get("Preparation", 0), errors="coerce").sum()
     
     # --- PROCESS CLIENT TIMESHEET (Local Transport) ---
     if 'Date' in client_df.columns:
         client_df = client_df[client_df['Date'] != 'Total']
         
-    l_trpt_sum = pd.to_numeric(client_df["L.Trpt"], errors="coerce").sum() if "L.Trpt" in client_df.columns else 0.0
+    l_trpt_sum = pd.to_numeric(client_df.get("L.Trpt", 0), errors="coerce").sum()
     
     # --- LOAD AND FILL INVOICE TEMPLATE ---
+    if template_file.name.lower().endswith('.csv'):
+        raise ValueError("The Invoice Template must be an Excel file (.xlsx) to preserve formulas and formatting.")
+        
     wb = load_workbook(template_file)
     
     sheet_map = {"SG": "SG", "CN": "CN", "KR": "KR ", "EUR": "EUR", "USD": "USD"}
@@ -154,10 +158,10 @@ def process_invoice_logic(
 # ============================================================
 st.set_page_config(page_title="Invoice Generator", layout="wide")
 
-st.title("Invoice Generation")
+st.title("Final Invoice Generation")
 st.write("Select your timesheet format and generate the final invoice template.")
 
-tab1, tab2 = st.tabs(["Single Timesheet Upload", "Dual Timesheet Upload (From SANA)"])
+tab1, tab2 = st.tabs(["Single Timesheet Upload (Combined Excel)", "Standalone Timesheet Upload (.csv or .xlsx)"])
 
 # ------------------------------------------------------------
 # TAB 1: SINGLE TIMESHEET UPLOAD
@@ -219,21 +223,25 @@ with tab1:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_t1"
                 )
+            except KeyError as e:
+                st.error(f"Missing expected column in timesheet: {str(e)}. Please check the uploaded file format.")
+            except ValueError as e:
+                st.error(f"Value error encountered: {str(e)}. This might be due to a missing tab in the template.")
+            except zipfile.BadZipFile:
+                st.error("One of the uploaded files is not a valid Excel file or is corrupted.")
             except Exception as e:
-                st.error(f"An error occurred while processing the invoice: {str(e)}")
+                st.error(f"An unexpected error occurred while processing the invoice: {str(e)}")
 
 # ------------------------------------------------------------
-# TAB 2: DUAL TIMESHEET UPLOAD
+# TAB 2: STANDALONE TIMESHEET UPLOAD
 # ------------------------------------------------------------
 with tab2:
     st.markdown("### 1. Upload Required Files")
-    col1_t2, col2_t2, col3_t2 = st.columns(3)
+    col1_t2, col2_t2 = st.columns(2)
     with col1_t2:
-        engineer_timesheet_t2 = st.file_uploader("Upload Engineer Timesheet", type=["xlsx"], key="eng_upload_t2")
+        client_timesheet_t2 = st.file_uploader("Upload Client Timesheet", type=["xlsx", "csv"], key="cli_upload_t2")
     with col2_t2:
-        client_timesheet_t2 = st.file_uploader("Upload Client Timesheet", type=["xlsx"], key="cli_upload_t2")
-    with col3_t2:
-        template_excel_t2 = st.file_uploader("Upload Blank Invoice Template", type=["xlsx"], key="inv_upload_t2")
+        template_excel_t2 = st.file_uploader("Upload Blank Invoice Template", type=["xlsx", "csv"], key="inv_upload_t2")
         
     st.markdown("### 2. Enter Information")
     c1_t2, c2_t2 = st.columns(2)
@@ -248,7 +256,7 @@ with tab2:
         svc_type_t2 = st.text_input("Service Type", key="svc_t2")
         vessel_name_t2 = st.text_input("Vessel Name", key="vessel_t2")
         vessel_no_t2 = st.text_input("Vessel No (if applicable)", key="vessel_no_t2")
-        engineer_name_invoice_t2 = st.text_input("Engineer Name", key="eng_name_t2")
+        engineer_name_invoice_t2 = st.text_input("Engineer Name (For Expenses)", key="eng_name_t2")
 
     st.markdown("### 3. Service & Role Details")
     c3_t2, c4_t2, c5_t2 = st.columns(3)
@@ -262,12 +270,18 @@ with tab2:
         ], key="pos_t2")
 
     if st.button("Generate Final Invoice", type="primary", key="btn_t2"):
-        if not engineer_timesheet_t2 or not client_timesheet_t2 or not template_excel_t2:
-            st.error("Please upload the Engineer Timesheet, Client Timesheet, and the Invoice Template.")
+        if not client_timesheet_t2 or not template_excel_t2:
+            st.error("Please upload the Client Timesheet AND the Invoice Template.")
         else:
             try:
-                eng_df = pd.read_excel(engineer_timesheet_t2, sheet_name=0, skiprows=3)
-                client_df = pd.read_excel(client_timesheet_t2, sheet_name=0, skiprows=3)
+                # Dynamically read Client Timesheet based on extension
+                if client_timesheet_t2.name.lower().endswith('.csv'):
+                    client_df = pd.read_csv(client_timesheet_t2)
+                else:
+                    client_df = pd.read_excel(client_timesheet_t2, sheet_name=0)
+                
+                # Use the Client DF for both since they contain matching calculation totals in the new prompt structure
+                eng_df = client_df.copy()
                 
                 output = process_invoice_logic(
                     eng_df, client_df, template_excel_t2, 
@@ -284,5 +298,11 @@ with tab2:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_t2"
                 )
+            except KeyError as e:
+                st.error(f"Missing expected column in timesheet: {str(e)}. Please check the uploaded file format.")
+            except ValueError as e:
+                st.error(f"Value error encountered: {str(e)}")
+            except zipfile.BadZipFile:
+                st.error("One of the uploaded files is not a valid Excel file or is corrupted.")
             except Exception as e:
-                st.error(f"An error occurred while processing the invoice: {str(e)}")
+                st.error(f"An unexpected error occurred while processing the invoice: {str(e)}")
