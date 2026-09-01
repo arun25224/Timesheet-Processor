@@ -154,10 +154,10 @@ def process_invoice_logic(
 # ============================================================
 st.set_page_config(page_title="Invoice Generator", layout="wide")
 
-st.title("Final Invoice Generation")
-st.write("Select your timesheet format and generate the final invoice template.")
+st.title("Invoice Generation")
+st.write("Select your timesheet format and generate the final invoice.")
 
-tab1, tab2 = st.tabs(["Single Timesheet Upload (Combined)", "Dual Timesheet Upload (Separate)"])
+tab1, tab2 = st.tabs(["Single Timesheet Upload", "Dual Timesheet Upload"])
 
 # ------------------------------------------------------------
 # TAB 1: SINGLE TIMESHEET UPLOAD
@@ -211,7 +211,7 @@ with tab1:
                     include_admin_fee_t1, position_t1, currency_t1
                 )
                 
-                st.success("Invoice Generated Successfully")
+                st.success("Invoice Generated.")
                 st.download_button(
                     label="Download Final Invoice",
                     data=output,
@@ -263,7 +263,7 @@ with tab2:
 
     if st.button("Generate Final Invoice", type="primary", key="btn_t2"):
         if not engineer_timesheet_t2 or not client_timesheet_t2 or not template_excel_t2:
-            st.error("Please upload the Engineer Timesheet, Client Timesheet, AND the Invoice Template.")
+            st.error("Please upload the Engineer Timesheet, Client Timesheet, and the Invoice Template.")
         else:
             try:
                 eng_df = pd.read_excel(engineer_timesheet_t2, sheet_name=0, skiprows=3)
