@@ -482,7 +482,6 @@ with tab2:
                 )
 
                 st.success("Invoice Generated Successfully")
-
                 wo_num_t2 = work_order_t2.strip() or "NeedsConfirmation"
 
                 st.download_button(
