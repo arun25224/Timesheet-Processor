@@ -59,7 +59,6 @@ def render_expense_ui(tab_key):
 def extract_totals_from_timesheet(df):
     df.columns = [str(c).strip() for c in df.columns]
     
-    # Locate the Total row
     total_row = None
     for _, row in df.iterrows():
         for val in row.values:
@@ -97,47 +96,6 @@ def extract_totals_from_timesheet(df):
     return totals
 
 # ============================================================
-# HOURS INJECTION (DYNAMIC ROW DETECTION, COLUMN D)
-# ============================================================
-def inject_hours(ws, position, values):
-    """values = {'travel time': x, 'normal time': x, 'overtime': x, 'waiting time': x, 'preparation time': x}"""
-    target = position.strip().lower()
-    written = []
-    
-    # 1) Find the role block label row (exact match, avoids 'service engineer' inside 'senior service engineer')
-    role_row = None
-    for r in range(1, ws.max_row + 1):
-        for c in (1, 2, 3):
-            v = str(ws.cell(row=r, column=c).value or "").strip().lower()
-            if v == target:
-                role_row = r
-                break
-        if role_row:
-            break
-    
-    # 2) Within the block, match each line by its Type text and write hours to Column D (4)
-    if role_row:
-        for r in range(role_row + 1, min(role_row + 13, ws.max_row + 1)):
-            type_val = str(ws.cell(row=r, column=3).value or "").strip().lower()
-            if not type_val:
-                type_val = str(ws.cell(row=r, column=2).value or "").strip().lower()
-            for key, val in values.items():
-                if type_val == key and val:
-                    ws.cell(row=r, column=4).value = val
-                    written.append((r, key, val))
-    else:
-        # Fallback: absolute rows (header at 20/30/40/50, data starts at header+1)
-        base = {"Service Technician": 20, "Service Engineer": 30,
-                "Senior Service Engineer": 40, "Specialist Service Engineer": 50}[position]
-        order = ["travel time", "normal time", "overtime", "waiting time", "preparation time"]
-        for i, key in enumerate(order):
-            if values.get(key):
-                ws.cell(row=base + 1 + i, column=4).value = values[key]
-                written.append((base + 1 + i, key, values[key]))
-    
-    return written
-
-# ============================================================
 # MAIN INVOICE LOGIC
 # ============================================================
 def process_invoice_logic(
@@ -163,11 +121,11 @@ def process_invoice_logic(
     
     target_sheet = currency
     if target_sheet not in wb.sheetnames:
-        matched = next((s for s in wb.sheetnames if target_sheet.lower() in s.lower()), None)
+        matched = next((s for s in wb.sheetnames if target_sheet.lower() in s.strip().lower()), None)
         target_sheet = matched if matched else wb.sheetnames[0]
     ws = wb[target_sheet]
     
-    # --- Customer Information (values in Column C) ---
+    # --- Customer Information ---
     safe_write(ws, 7, 3, cust_name)
     safe_write(ws, 8, 3, inv_address)
     safe_write(ws, 9, 3, del_address)
@@ -178,17 +136,43 @@ def process_invoice_logic(
     safe_write(ws, 14, 3, vessel_name)
     safe_write(ws, 15, 3, vessel_no)
     
-    # --- Hours -> Column D, rows matched by Type text ---
-    values = {
-        "travel time": travel_sum,
-        "normal time": nt_sum,
-        "overtime": ot_sum,
-        "waiting time": waiting_sum,
-        "preparation time": prep_sum,
+    # ============================================================
+    # ABSOLUTE ROW ASSIGNMENTS (COLUMN D = index 4)
+    # Service Technician        : D21:D27
+    # Service Engineer          : D31:D37
+    # Senior Service Engineer   : D41:D47
+    # Specialist Service Engineer: D51:D57
+    # Order: Travel Time, Normal Time, Overtime, Waiting Time,
+    #        Preparation Time, Daily rate (per day), Overtime (per hour)
+    # ============================================================
+    ROLE_START_ROW = {
+        "Service Technician": 21,
+        "Service Engineer": 31,
+        "Senior Service Engineer": 41,
+        "Specialist Service Engineer": 51,
     }
-    written = inject_hours(ws, position, values)
-    for r, k, v in written:
-        st.write(f"✏️ {position} | {k} = {v} → row {r}, Column D")
+    
+    start_row = ROLE_START_ROW[position]
+    
+    planned_writes = [
+        (start_row + 0, "Travel Time",       travel_sum),
+        (start_row + 1, "Normal Time",       nt_sum),
+        (start_row + 2, "Overtime",          ot_sum),
+        (start_row + 3, "Waiting Time",      waiting_sum),
+        (start_row + 4, "Preparation Time",  prep_sum),
+        # (start_row + 5) Daily rate (per day)  -> left blank (no offshore data in timesheet)
+        # (start_row + 6) Overtime (per hour)   -> left blank (no offshore data in timesheet)
+    ]
+    
+    for row, label, val in planned_writes:
+        if val:
+            safe_write(ws, row, 4, val)   # Column D
+    
+    # --- READ-BACK VERIFICATION (proves the values landed) ---
+    verify = {}
+    for offset in range(7):
+        verify[f"D{start_row + offset}"] = ws.cell(row=start_row + offset, column=4).value
+    st.write(f"🔎 Read-back verification for {position} (D{start_row}:D{start_row + 6}):", verify)
     
     # --- Expenses section ---
     expense_header_row = None
@@ -202,7 +186,6 @@ def process_invoice_logic(
             break
     
     if expense_header_row:
-        # Engineer name on the Allowance [Engineer 1] description cell
         safe_write(ws, expense_header_row + 2, 3, engineer_name)
         
         expense_queue = [e.copy() for e in user_expenses if e.get('desc')]
@@ -220,7 +203,7 @@ def process_invoice_logic(
                     safe_write(ws, r, 6, matched['price'])   # Price = Column F
                 expense_queue.remove(matched)
         
-        # Pass 2: remaining expenses go into empty placeholder rows
+        # Pass 2: remaining expenses into empty placeholder rows
         for r in range(expense_header_row + 1, expense_header_row + 25):
             if not expense_queue:
                 break
@@ -228,7 +211,7 @@ def process_invoice_logic(
             desc_val = str(ws.cell(row=r, column=3).value or "").strip()
             if "ADD RELEVANT EXPENSES" in cat_val.upper() and not desc_val:
                 exp = expense_queue.pop(0)
-                safe_write(ws, r, 3, exp['desc'])            # Description = Column C
+                safe_write(ws, r, 3, exp['desc'])
                 if exp['qty'] > 0:
                     safe_write(ws, r, 4, exp['qty'])
                 if exp['price'] > 0:
@@ -239,8 +222,8 @@ def process_invoice_logic(
             for r in range(expense_header_row + 1, expense_header_row + 25):
                 desc_val = str(ws.cell(row=r, column=3).value or "").strip().lower()
                 if "local transport" in desc_val:
-                    safe_write(ws, r, 4, l_trpt_sum)         # Quantity = Column D
-                    st.write(f"✏️ Local transport qty {l_trpt_sum} → row {r}, Column D")
+                    safe_write(ws, r, 4, l_trpt_sum)
+                    st.write(f"✏️ Local transport qty {l_trpt_sum} → D{r}")
                     break
     
     invoice_output = io.BytesIO()
