@@ -26,7 +26,7 @@ def render_expense_ui(tab_key):
     expense_options = [
         "Shipyard Pass", "Taxi Overseas", "Ferry Fare", "Visa", "Hotel", 
         "Laundry", "Agent Fee", "Excess Baggage Fee", "Airport Tax", 
-        "Flight Ticket", "Misc"
+        "Flight Ticket", "Misc", "Local transport"
     ]
     
     for i, exp in enumerate(st.session_state[f"expenses_{tab_key}"]):
@@ -44,7 +44,7 @@ def render_expense_ui(tab_key):
             exp['price'] = st.number_input("Price (SGD)", min_value=0.0, value=float(exp.get('price', 0.0)), step=0.01, key=f"price_{tab_key}_{i}")
         with col4:
             st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("Remove", key=f"del_{tab_key}_{i}"):
+            if st.button("X", key=f"del_{tab_key}_{i}"):
                 st.session_state[f"expenses_{tab_key}"].pop(i)
                 st.rerun()
                 
@@ -60,45 +60,51 @@ def process_invoice_logic(
     proj_no, svc_type, vessel_name, vessel_no, engineer_name, 
     include_admin_fee, position, currency, user_expenses
 ):
-    # Clean column names to remove accidental trailing spaces
+    # Clean column names
     eng_df.columns = eng_df.columns.str.strip()
     client_df.columns = client_df.columns.str.strip()
 
     # --- PROCESS ENGINEER TIMESHEET (Work Hours) ---
     if 'Date' in eng_df.columns:
-        eng_df = eng_df[eng_df['Date'].astype(str) != 'Total']
+        eng_df = eng_df[eng_df['Date'].astype(str).str.lower() != 'total']
         
-    travel = pd.to_numeric(eng_df["Travel"], errors="coerce").fillna(0).sum() if "Travel" in eng_df.columns else 0.0
-    travel_ot = pd.to_numeric(eng_df["Travel OT"], errors="coerce").fillna(0).sum() if "Travel OT" in eng_df.columns else 0.0
+    travel = pd.to_numeric(eng_df.get("Travel", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
+    travel_ot = pd.to_numeric(eng_df.get("Travel OT", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
     travel_sum = travel + travel_ot
     
     nt_col = "Normal Time" if "Normal Time" in eng_df.columns else ("NT" if "NT" in eng_df.columns else None)
-    nt_sum = pd.to_numeric(eng_df[nt_col], errors="coerce").fillna(0).sum() if nt_col and nt_col in eng_df.columns else 0.0
-    ot_sum = pd.to_numeric(eng_df["OT"], errors="coerce").fillna(0).sum() if "OT" in eng_df.columns else 0.0
+    nt_sum = pd.to_numeric(eng_df[nt_col], errors="coerce").fillna(0).sum() if nt_col else 0.0
+    ot_sum = pd.to_numeric(eng_df.get("OT", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
     
-    waiting_sum = pd.to_numeric(eng_df["Waiting time"], errors="coerce").fillna(0).sum() if "Waiting time" in eng_df.columns else 0.0
-    prep_sum = pd.to_numeric(eng_df["Preparation"], errors="coerce").fillna(0).sum() if "Preparation" in eng_df.columns else 0.0
+    waiting_sum = pd.to_numeric(eng_df.get("Waiting Time", eng_df.get("Waiting time", pd.Series(dtype=float))), errors="coerce").fillna(0).sum()
+    prep_sum = pd.to_numeric(eng_df.get("Preparation Time", eng_df.get("Preparation", pd.Series(dtype=float))), errors="coerce").fillna(0).sum()
     
     # --- PROCESS CLIENT TIMESHEET (Local Transport) ---
     if 'Date' in client_df.columns:
-        client_df = client_df[client_df['Date'].astype(str) != 'Total']
+        client_df = client_df[client_df['Date'].astype(str).str.lower() != 'total']
         
-    l_trpt_sum = pd.to_numeric(client_df["L.Trpt"], errors="coerce").fillna(0).sum() if "L.Trpt" in client_df.columns else 0.0
+    l_trpt_sum = pd.to_numeric(client_df.get("L.Trpt", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
     
     # --- LOAD AND FILL INVOICE TEMPLATE ---
     if template_file.name.lower().endswith('.csv'):
-        raise ValueError("The Invoice Template must be an Excel file (.xlsx) to preserve formulas and formatting.")
+        raise ValueError("The Invoice Template must be an Excel file (.xlsx).")
         
     wb = load_workbook(template_file)
     
-    sheet_map = {"SG": "SG", "CN": "CN", "KR": "KR ", "EUR": "EUR", "USD": "USD"}
+    # Determine Target Sheet
+    sheet_map = {"SG": "SG", "CN": "CN", "KR": "KR", "EUR": "EUR", "USD": "USD"}
     target_sheet = sheet_map.get(currency, currency)
     
+    # Flexible sheet matching if exact match fails
     if target_sheet not in wb.sheetnames:
-        if currency in wb.sheetnames:
-            target_sheet = currency
-        else:
-            raise ValueError(f"The uploaded template does not contain a tab for {currency}.")
+        matched = False
+        for s in wb.sheetnames:
+            if target_sheet.lower() in s.lower() or s.lower() in target_sheet.lower():
+                target_sheet = s
+                matched = True
+                break
+        if not matched:
+            target_sheet = wb.sheetnames[0]
             
     ws = wb[target_sheet]
     
@@ -117,113 +123,84 @@ def process_invoice_logic(
     target_pos = position.lower().strip()
     pos_start_row = None
     
-    # 1. Locate the header row for the selected position
+    # Locate the header row for the selected position
     for r in range(10, 60):
-        # Look in the first few columns for the position name
         for c in range(1, 4):
             cell_val = str(ws.cell(row=r, column=c).value).lower().strip()
-            if target_pos == cell_val:
+            if target_pos in cell_val:
                 pos_start_row = r
                 break
         if pos_start_row:
             break
             
-    # 2. Inject hours by mapping the 'Type' column
+    # Inject hours by mapping the 'Type' column
     if pos_start_row:
         for r in range(pos_start_row + 1, pos_start_row + 15):
-            type_val = str(ws.cell(row=r, column=3).value).strip() # Column C is Type
+            type_val = str(ws.cell(row=r, column=3).value).strip()
             
-            # Identify which row matches which category and write to Column D (4)
+            # Column 4 is Hours/#days
             if type_val == "Travel Time" and travel_sum > 0: safe_write(ws, r, 4, travel_sum)
             elif type_val == "Normal Time" and nt_sum > 0: safe_write(ws, r, 4, nt_sum)
             elif type_val == "Overtime" and ot_sum > 0: safe_write(ws, r, 4, ot_sum)
             elif type_val == "Waiting Time" and waiting_sum > 0: safe_write(ws, r, 4, waiting_sum)
             elif type_val == "Preparation Time" and prep_sum > 0: safe_write(ws, r, 4, prep_sum)
-    else:
-        # Fallback logic if dynamic search misses
-        r_offset = 20
-        if position == "Service Engineer": r_offset = 30
-        elif position == "Senior Service Engineer": r_offset = 40
-        elif position == "Specialist Service Engineer": r_offset = 50
-        
-        safe_write(ws, r_offset + 1, 4, travel_sum if travel_sum > 0 else "")
-        safe_write(ws, r_offset + 2, 4, nt_sum if nt_sum > 0 else "")
-        safe_write(ws, r_offset + 3, 4, ot_sum if ot_sum > 0 else "")
-        safe_write(ws, r_offset + 4, 4, waiting_sum if waiting_sum > 0 else "")
-        safe_write(ws, r_offset + 5, 4, prep_sum if prep_sum > 0 else "")
     
     # --- FIND EXPENSE & LOCAL TRANSPORT SECTION ---
-    expense_row = 59
-    local_transport_row = None
-    
-    for row_idx in range(50, 75):
-        col_b_val = str(ws.cell(row=row_idx, column=2).value).strip()
-        col_c_val = str(ws.cell(row=row_idx, column=3).value).strip()
-        
-        if "Expenses" in col_b_val:
-            expense_row = row_idx
-            
-        if "local transport" in col_c_val.lower() or "transportation" in col_c_val.lower():
-            local_transport_row = row_idx
+    expense_header_row = None
+    for r in range(50, 80):
+        val = str(ws.cell(row=r, column=2).value).strip().lower()
+        if "expenses" in val:
+            expense_header_row = r
             break
             
-    if not local_transport_row:
-        local_transport_row = 63
-        safe_write(ws, local_transport_row, 3, "Local Transport")
-
-    safe_write(ws, expense_row + 2, 3, engineer_name)
+    if expense_header_row:
+        safe_write(ws, expense_header_row + 2, 3, engineer_name)
         
-    if l_trpt_sum > 0:
-        safe_write(ws, local_transport_row, 4, l_trpt_sum)
+        # Find Local Transport and inject calculated units
+        if l_trpt_sum > 0:
+            for r in range(expense_header_row, expense_header_row + 20):
+                c3_val = str(ws.cell(row=r, column=3).value).lower()
+                if "local transport" in c3_val:
+                    safe_write(ws, r, 4, l_trpt_sum)
+                    break
 
-    # Inject User Custom Expenses
-    if user_expenses:
-        for row_idx in range(expense_row + 1, expense_row + 20):
-            cell_desc = str(ws.cell(row=row_idx, column=3).value).strip()
+        # Inject User Custom Expenses dynamically
+        if user_expenses:
+            expense_queue = user_expenses.copy()
             
-            for exp in user_expenses:
-                if cell_desc == exp['desc']:
-                    if exp['qty'] > 0:
-                        safe_write(ws, row_idx, 4, exp['qty'])
-                    if exp['price'] > 0:
-                        safe_write(ws, row_idx, 6, exp['price'])
+            for r in range(expense_header_row + 1, expense_header_row + 25):
+                if not expense_queue: break
+                
+                c3_val = str(ws.cell(row=r, column=3).value).strip()
+                c2_val = str(ws.cell(row=r, column=2).value).strip()
+                
+                # Try to match exact description in Column C
+                matched_exp = next((exp for exp in expense_queue if exp['desc'].lower() == c3_val.lower()), None)
+                if matched_exp:
+                    if matched_exp['qty'] > 0: safe_write(ws, r, 4, matched_exp['qty'])
+                    if matched_exp['price'] > 0: safe_write(ws, r, 6, matched_exp['price'])
+                    expense_queue.remove(matched_exp)
+                    continue
+                    
+                # Try to match exact description in Column B
+                matched_exp_b = next((exp for exp in expense_queue if exp['desc'].lower() == c2_val.lower()), None)
+                if matched_exp_b:
+                    if matched_exp_b['qty'] > 0: safe_write(ws, r, 4, matched_exp_b['qty'])
+                    if matched_exp_b['price'] > 0: safe_write(ws, r, 6, matched_exp_b['price'])
+                    expense_queue.remove(matched_exp_b)
+                    continue
 
-    # --- DYNAMIC INVOICE TOTALS & TAX LOGIC ---
-    if currency == "CN":
-        if include_admin_fee == "No":
-            safe_write(ws, 82, 7, "-")
-        else:
-            safe_write(ws, 82, 7, "=0.1*G67")
-        safe_write(ws, 84, 7, "=0.06*(SUM(G28,G38,G48,G58,G67,G74,G82))")
-        safe_write(ws, 86, 7, "=SUM(G28,G38,G48,G58,G67,G74,G77:G80,G82,G84)")
-
-    elif currency == "KR":
-        if include_admin_fee == "No":
-            safe_write(ws, 82, 3, "-")
-        else:
-            safe_write(ws, 82, 3, "=0.1*(SUM(G63:G66))")
-        safe_write(ws, 84, 3, "=SUM(G41:G47,G61:G63,C82,G31:G37, G21:G27, G51:G57)")
-
-    elif currency == "SG":
-        if include_admin_fee == "No":
-            safe_write(ws, 78, 3, "-")
-        else:
-            safe_write(ws, 78, 3, "=SUM(G61:G62)*0.1")
-        safe_write(ws, 80, 3, "=SUM(G41:G47,G61:G63,C78,G31:G37, G21:G27, G51:G57)")
-
-    elif currency == "EUR":
-        if include_admin_fee == "No":
-            safe_write(ws, 82, 3, "-")
-        else:
-            safe_write(ws, 82, 3, "=0.1*(SUM(G61:G66))")
-        safe_write(ws, 84, 3, "=SUM(G41:G47,G61:G66,C82,G31:G37, G21:G27,G51:G57,G70:G73,G77:G80)")
-
-    elif currency == "USD":
-        if include_admin_fee == "No":
-            safe_write(ws, 82, 3, "-")
-        else:
-            safe_write(ws, 82, 3, "=0.1*(SUM(G63:G66))")
-        safe_write(ws, 84, 3, "=SUM(G21:G27,G31:G37,G41:G47,G51:G57,G61:G66,G70:G73,G77:G80,C82)")
+                # Overwrite placeholder rows
+                if "ADD DESCRIPTION" in c2_val or "ADD DESCRIPTION" in c3_val or "ADD RELEVANT EXPENSES" in c2_val or "ADD RELEVANT EXPENSES" in c3_val:
+                    exp_to_inject = expense_queue.pop(0)
+                    
+                    if "ADD DESCRIPTION" in c2_val or "ADD RELEVANT" in c2_val:
+                        safe_write(ws, r, 2, exp_to_inject['desc'])
+                    else:
+                        safe_write(ws, r, 3, exp_to_inject['desc'])
+                        
+                    if exp_to_inject['qty'] > 0: safe_write(ws, r, 4, exp_to_inject['qty'])
+                    if exp_to_inject['price'] > 0: safe_write(ws, r, 6, exp_to_inject['price'])
 
     # Export Final Invoice
     invoice_output = io.BytesIO()
@@ -280,7 +257,6 @@ with tab1:
             "Service Technician", "Service Engineer", "Senior Service Engineer", "Specialist Service Engineer"
         ], key="pos_t1")
 
-    # Render dynamic expenses UI
     user_expenses_t1 = render_expense_ui("t1")
 
     if st.button("Generate Final Invoice", type="primary", key="btn_t1"):
@@ -291,12 +267,11 @@ with tab1:
                 xls = pd.ExcelFile(timesheet_excel_t1)
                 sheet_names = xls.sheet_names
                 
-                # Dynamically locate sheets based on keywords, fallback to index
                 eng_sheet = next((s for s in sheet_names if 'engineer' in s.lower()), sheet_names[1] if len(sheet_names) > 1 else sheet_names[0])
                 client_sheet = next((s for s in sheet_names if 'client' in s.lower()), sheet_names[0])
                 
-                eng_df = pd.read_excel(timesheet_excel_t1, sheet_name=eng_sheet, skiprows=2)
-                client_df = pd.read_excel(timesheet_excel_t1, sheet_name=client_sheet, skiprows=2)
+                eng_df = pd.read_excel(timesheet_excel_t1, sheet_name=eng_sheet)
+                client_df = pd.read_excel(timesheet_excel_t1, sheet_name=client_sheet)
                 
                 output = process_invoice_logic(
                     eng_df, client_df, template_excel_t1, 
@@ -360,7 +335,6 @@ with tab2:
             "Service Technician", "Service Engineer", "Senior Service Engineer", "Specialist Service Engineer"
         ], key="pos_t2")
 
-    # Render dynamic expenses UI
     user_expenses_t2 = render_expense_ui("t2")
 
     if st.button("Generate Final Invoice", type="primary", key="btn_t2"):
