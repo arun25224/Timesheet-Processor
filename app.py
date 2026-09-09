@@ -33,7 +33,7 @@ def safe_write(ws, row_idx, col_idx, value):
                 break
 
 # ============================================================
-# ROBUST TIMESHEET READER (auto-detect header row)
+# TIMESHEET READER
 # ============================================================
 HEADER_KEYWORDS = {'date', 'travel', 'nt', 'ot', 'waiting time', 'preparation', 'l.trpt', 'day'}
 
@@ -272,7 +272,7 @@ st.set_page_config(page_title="Invoice Generator", layout="wide")
 st.title("Final Invoice Generation")
 st.write("Select your timesheet format and generate the final invoice template.")
 
-tab1, tab2 = st.tabs(["Single Timesheet Upload (Combined Excel)", "Standalone Timesheet Upload (.csv or .xlsx)"])
+tab1, tab2 = st.tabs(["Timesheet Upload (Combined Excel)", "SANA Timesheet Upload"])
 
 # ------------------------------------------------------------
 # TAB 1
