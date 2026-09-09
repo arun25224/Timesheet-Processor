@@ -53,101 +53,121 @@ def render_expense_ui(tab_key):
         
     return st.session_state[f"expenses_{tab_key}"]
 
+# ============================================================
+# TIMESHEET EXTRACTION (TOTAL ROW)
+# ============================================================
 def extract_totals_from_timesheet(df):
-    """Extract total values from the Total row in the timesheet"""
-    df.columns = df.columns.str.strip()
+    df.columns = [str(c).strip() for c in df.columns]
     
-    # Find the Total row
+    # Locate the Total row
     total_row = None
-    for idx, row in df.iterrows():
+    for _, row in df.iterrows():
         for val in row.values:
-            if isinstance(val, str) and val.lower().strip() == 'total':
+            if isinstance(val, str) and val.strip().lower() == 'total':
                 total_row = row
                 break
         if total_row is not None:
             break
     
-    if total_row is None:
-        st.warning("No 'Total' row found. Please ensure your timesheet has a Total row.")
-        return {}
-    
-    # Extract values from Total row with column mapping
-    totals = {}
-    
     col_mapping = {
-        'Travel': ['Travel', 'Travel Time'],
-        'NT': ['NT', 'Normal Time'],
-        'OT': ['OT', 'Overtime'],
-        'Waiting time': ['Waiting time', 'Waiting Time'],
+        'Travel':          ['Travel', 'Travel Time'],
+        'NT':              ['NT', 'Normal Time'],
+        'OT':              ['OT', 'Overtime'],
+        'Waiting time':    ['Waiting time', 'Waiting Time'],
         'Waiting time OT': ['Waiting time OT', 'Waiting Time OT'],
-        'Preparation': ['Preparation', 'Preparation Time'],
-        'L.Trpt': ['L.Trpt', 'Local transport']
+        'Preparation':     ['Preparation', 'Preparation Time'],
+        'L.Trpt':          ['L.Trpt', 'Local transport'],
     }
     
+    totals = {}
     for std_name, possible_names in col_mapping.items():
-        value = 0
-        for name in possible_names:
-            matching_col = None
-            for col in df.columns:
-                if col.lower() == name.lower():
-                    matching_col = col
-                    break
-            
-            if matching_col is not None:
-                try:
-                    val = total_row[matching_col]
-                    if pd.notna(val):
-                        value = float(val)
-                        break
-                except (ValueError, TypeError):
-                    pass
-        
-        totals[std_name] = value
+        matching_col = next((c for c in df.columns if c.lower() in [p.lower() for p in possible_names]), None)
+        if matching_col is None:
+            totals[std_name] = 0.0
+            continue
+        if total_row is not None:
+            try:
+                val = total_row[matching_col]
+                totals[std_name] = float(val) if pd.notna(val) else 0.0
+            except (ValueError, TypeError):
+                totals[std_name] = 0.0
+        else:
+            totals[std_name] = pd.to_numeric(df[matching_col], errors='coerce').fillna(0).sum()
     
     return totals
 
+# ============================================================
+# HOURS INJECTION (DYNAMIC ROW DETECTION, COLUMN D)
+# ============================================================
+def inject_hours(ws, position, values):
+    """values = {'travel time': x, 'normal time': x, 'overtime': x, 'waiting time': x, 'preparation time': x}"""
+    target = position.strip().lower()
+    written = []
+    
+    # 1) Find the role block label row (exact match, avoids 'service engineer' inside 'senior service engineer')
+    role_row = None
+    for r in range(1, ws.max_row + 1):
+        for c in (1, 2, 3):
+            v = str(ws.cell(row=r, column=c).value or "").strip().lower()
+            if v == target:
+                role_row = r
+                break
+        if role_row:
+            break
+    
+    # 2) Within the block, match each line by its Type text and write hours to Column D (4)
+    if role_row:
+        for r in range(role_row + 1, min(role_row + 13, ws.max_row + 1)):
+            type_val = str(ws.cell(row=r, column=3).value or "").strip().lower()
+            if not type_val:
+                type_val = str(ws.cell(row=r, column=2).value or "").strip().lower()
+            for key, val in values.items():
+                if type_val == key and val:
+                    ws.cell(row=r, column=4).value = val
+                    written.append((r, key, val))
+    else:
+        # Fallback: absolute rows (header at 20/30/40/50, data starts at header+1)
+        base = {"Service Technician": 20, "Service Engineer": 30,
+                "Senior Service Engineer": 40, "Specialist Service Engineer": 50}[position]
+        order = ["travel time", "normal time", "overtime", "waiting time", "preparation time"]
+        for i, key in enumerate(order):
+            if values.get(key):
+                ws.cell(row=base + 1 + i, column=4).value = values[key]
+                written.append((base + 1 + i, key, values[key]))
+    
+    return written
+
+# ============================================================
+# MAIN INVOICE LOGIC
+# ============================================================
 def process_invoice_logic(
     df, template_file, 
     cust_name, inv_address, del_address, reference, cust_po, 
     proj_no, svc_type, vessel_name, vessel_no, engineer_name, 
     include_admin_fee, position, currency, user_expenses
 ):
-    # Extract totals from timesheet
     totals = extract_totals_from_timesheet(df)
-    
     st.write("✅ Extracted totals from timesheet:", totals)
     
-    # Calculate sums
-    travel_sum = totals.get('Travel', 0)
-    nt_sum = totals.get('NT', 0)
-    ot_sum = totals.get('OT', 0)
+    travel_sum  = totals.get('Travel', 0)
+    nt_sum      = totals.get('NT', 0)
+    ot_sum      = totals.get('OT', 0)
     waiting_sum = totals.get('Waiting time', 0) + totals.get('Waiting time OT', 0)
-    prep_sum = totals.get('Preparation', 0)
-    l_trpt_sum = totals.get('L.Trpt', 0)
+    prep_sum    = totals.get('Preparation', 0)
+    l_trpt_sum  = totals.get('L.Trpt', 0)
     
-    # Load template
     if template_file.name.lower().endswith('.csv'):
         raise ValueError("The Invoice Template must be an Excel file (.xlsx).")
         
     wb = load_workbook(template_file)
     
-    # Determine Target Sheet
-    sheet_map = {"SG": "SG", "CN": "CN", "KR": "KR", "EUR": "EUR", "USD": "USD"}
-    target_sheet = sheet_map.get(currency, currency)
-    
+    target_sheet = currency
     if target_sheet not in wb.sheetnames:
-        matched = False
-        for s in wb.sheetnames:
-            if target_sheet.lower() in s.lower() or s.lower() in target_sheet.lower():
-                target_sheet = s
-                matched = True
-                break
-        if not matched:
-            target_sheet = wb.sheetnames[0]
-            
+        matched = next((s for s in wb.sheetnames if target_sheet.lower() in s.lower()), None)
+        target_sheet = matched if matched else wb.sheetnames[0]
     ws = wb[target_sheet]
     
-    # Inject Customer Information
+    # --- Customer Information (values in Column C) ---
     safe_write(ws, 7, 3, cust_name)
     safe_write(ws, 8, 3, inv_address)
     safe_write(ws, 9, 3, del_address)
@@ -158,85 +178,74 @@ def process_invoice_logic(
     safe_write(ws, 14, 3, vessel_name)
     safe_write(ws, 15, 3, vessel_no)
     
-    # Map positions to base rows (header row)
-    role_base_row_map = {
-        "Service Technician": 20,
-        "Service Engineer": 30,
-        "Senior Service Engineer": 40,
-        "Specialist Service Engineer": 50
+    # --- Hours -> Column D, rows matched by Type text ---
+    values = {
+        "travel time": travel_sum,
+        "normal time": nt_sum,
+        "overtime": ot_sum,
+        "waiting time": waiting_sum,
+        "preparation time": prep_sum,
     }
+    written = inject_hours(ws, position, values)
+    for r, k, v in written:
+        st.write(f"✏️ {position} | {k} = {v} → row {r}, Column D")
     
-    base_row = role_base_row_map.get(position)
-    
-    if base_row:
-        # Write hours to Column D (index 4) - Hours/#days column
-        # Data rows start at base_row + 2
-        if travel_sum > 0:
-            ws.cell(row=base_row + 2, column=4).value = travel_sum
-            st.write(f"✏️ Writing Travel Time {travel_sum} to row {base_row + 2}, col 4 (D)")
-        if nt_sum > 0:
-            ws.cell(row=base_row + 3, column=4).value = nt_sum
-            st.write(f"✏️ Writing Normal Time {nt_sum} to row {base_row + 3}, col 4 (D)")
-        if ot_sum > 0:
-            ws.cell(row=base_row + 4, column=4).value = ot_sum
-            st.write(f"✏️ Writing Overtime {ot_sum} to row {base_row + 4}, col 4 (D)")
-        if waiting_sum > 0:
-            ws.cell(row=base_row + 5, column=4).value = waiting_sum
-            st.write(f"✏️ Writing Waiting Time {waiting_sum} to row {base_row + 5}, col 4 (D)")
-        if prep_sum > 0:
-            ws.cell(row=base_row + 6, column=4).value = prep_sum
-            st.write(f"✏️ Writing Preparation Time {prep_sum} to row {base_row + 6}, col 4 (D)")
-    
-    # Handle Local Transport in Expenses section
-    if l_trpt_sum > 0:
-        for r in range(1, ws.max_row + 1):
-            # Search in Column C (Description)
-            cell_val = str(ws.cell(row=r, column=3).value or "").lower()
-            if "local transport" in cell_val:
-                ws.cell(row=r, column=4).value = l_trpt_sum  # Write to Column D (Quantity)
-                st.write(f"✏️ Writing Local Transport {l_trpt_sum} to row {r}, col 4 (D)")
-                break
-    
-    # Inject User Custom Expenses dynamically
-    if user_expenses:
-        expense_header_row = None
-        for r in range(50, 80):
-            val = str(ws.cell(row=r, column=2).value or "").strip().lower()
-            if "expenses" in val:
+    # --- Expenses section ---
+    expense_header_row = None
+    for r in range(40, 90):
+        for c in (1, 2):
+            v = str(ws.cell(row=r, column=c).value or "").strip().lower()
+            if v == "expenses":
                 expense_header_row = r
                 break
-        
         if expense_header_row:
-            safe_write(ws, expense_header_row + 2, 3, engineer_name)
-            
-            expense_queue = user_expenses.copy()
-            
-            for r in range(expense_header_row + 1, expense_header_row + 25):
-                if not expense_queue:
-                    break
-                
-                c2_val = str(ws.cell(row=r, column=2).value or "").strip()
-                c3_val = str(ws.cell(row=r, column=3).value or "").strip()
-                
-                if "ADD RELEVANT EXPENSES" in c2_val or "ADD RELEVANT EXPENSES" in c3_val:
-                    exp_to_inject = expense_queue.pop(0)
-                    
-                    if "ADD RELEVANT EXPENSES" in c2_val:
-                        safe_write(ws, r, 2, exp_to_inject['desc'])
-                    else:
-                        safe_write(ws, r, 3, exp_to_inject['desc'])
-                        
-                    # Quantity is Column D (4), Price is Column F (6)
-                    if exp_to_inject['qty'] > 0:
-                        safe_write(ws, r, 4, exp_to_inject['qty'])
-                    if exp_to_inject['price'] > 0:
-                        safe_write(ws, r, 6, exp_to_inject['price'])
+            break
     
-    # Export Final Invoice
+    if expense_header_row:
+        # Engineer name on the Allowance [Engineer 1] description cell
+        safe_write(ws, expense_header_row + 2, 3, engineer_name)
+        
+        expense_queue = [e.copy() for e in user_expenses if e.get('desc')]
+        
+        # Pass 1: match UI expenses against pre-listed descriptions (Column C)
+        for r in range(expense_header_row + 1, expense_header_row + 25):
+            desc_val = str(ws.cell(row=r, column=3).value or "").strip().lower()
+            if not desc_val:
+                continue
+            matched = next((e for e in expense_queue if e['desc'].lower() == desc_val), None)
+            if matched:
+                if matched['qty'] > 0:
+                    safe_write(ws, r, 4, matched['qty'])     # Quantity = Column D
+                if matched['price'] > 0:
+                    safe_write(ws, r, 6, matched['price'])   # Price = Column F
+                expense_queue.remove(matched)
+        
+        # Pass 2: remaining expenses go into empty placeholder rows
+        for r in range(expense_header_row + 1, expense_header_row + 25):
+            if not expense_queue:
+                break
+            cat_val  = str(ws.cell(row=r, column=2).value or "").strip()
+            desc_val = str(ws.cell(row=r, column=3).value or "").strip()
+            if "ADD RELEVANT EXPENSES" in cat_val.upper() and not desc_val:
+                exp = expense_queue.pop(0)
+                safe_write(ws, r, 3, exp['desc'])            # Description = Column C
+                if exp['qty'] > 0:
+                    safe_write(ws, r, 4, exp['qty'])
+                if exp['price'] > 0:
+                    safe_write(ws, r, 6, exp['price'])
+        
+        # Pass 3: Local transport quantity from timesheet L.Trpt total
+        if l_trpt_sum > 0:
+            for r in range(expense_header_row + 1, expense_header_row + 25):
+                desc_val = str(ws.cell(row=r, column=3).value or "").strip().lower()
+                if "local transport" in desc_val:
+                    safe_write(ws, r, 4, l_trpt_sum)         # Quantity = Column D
+                    st.write(f"✏️ Local transport qty {l_trpt_sum} → row {r}, Column D")
+                    break
+    
     invoice_output = io.BytesIO()
     wb.save(invoice_output)
     invoice_output.seek(0)
-    
     return invoice_output
 
 # ============================================================
@@ -250,7 +259,7 @@ st.write("Select your timesheet format and generate the final invoice template."
 tab1, tab2 = st.tabs(["Single Timesheet Upload (Combined Excel)", "Standalone Timesheet Upload (.csv or .xlsx)"])
 
 # ------------------------------------------------------------
-# TAB 1: SINGLE TIMESHEET UPLOAD
+# TAB 1
 # ------------------------------------------------------------
 with tab1:
     st.markdown("### 1. Upload Required Files")
@@ -296,7 +305,6 @@ with tab1:
             try:
                 xls = pd.ExcelFile(timesheet_excel_t1)
                 sheet_names = xls.sheet_names
-                
                 eng_sheet = next((s for s in sheet_names if 'engineer' in s.lower()), sheet_names[1] if len(sheet_names) > 1 else sheet_names[0])
                 df_t1 = pd.read_excel(timesheet_excel_t1, sheet_name=eng_sheet)
                 
@@ -319,7 +327,7 @@ with tab1:
                 st.error(f"Error occurred while processing: {str(e)}")
 
 # ------------------------------------------------------------
-# TAB 2: STANDALONE TIMESHEET UPLOAD
+# TAB 2
 # ------------------------------------------------------------
 with tab2:
     st.markdown("### 1. Upload Required Files")
