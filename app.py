@@ -119,33 +119,24 @@ def process_invoice_logic(
     safe_write(ws, 14, 3, vessel_name)
     safe_write(ws, 15, 3, vessel_no)
     
-    # --- DYNAMICALLY INJECT HOURS INTO THE CORRECT POSITION SECTION ---
-    target_pos = position.lower().strip()
-    pos_start_row = None
+    # --- INJECT HOURS INTO THE HARDCODED POSITION SECTIONS ---
+    # Map the dropdown selection to the precise starting row based on the template structure
+    role_base_row_map = {
+        "Service Technician": 20,
+        "Service Engineer": 30,
+        "Senior Service Engineer": 40,
+        "Specialist Service Engineer": 50
+    }
     
-    # Strictly locate the header row for the selected position in Column B (2)
-    for r in range(15, 60):
-        cell_val = str(ws.cell(row=r, column=2).value).lower().strip()
-        if cell_val == target_pos:  # Strict match prevents "Service Engineer" from matching "Senior Service Engineer"
-            pos_start_row = r
-            break
-            
-    # Inject hours by mapping the 'Type' column strictly into Column D (4)
-    if pos_start_row:
-        for r in range(pos_start_row + 1, pos_start_row + 10):
-            type_val = str(ws.cell(row=r, column=3).value).strip()
-            
-            # Column 4 is Hours/#days
-            if type_val == "Travel Time" and travel_sum > 0: 
-                ws.cell(row=r, column=4).value = travel_sum
-            elif type_val == "Normal Time" and nt_sum > 0: 
-                ws.cell(row=r, column=4).value = nt_sum
-            elif type_val == "Overtime" and ot_sum > 0: 
-                ws.cell(row=r, column=4).value = ot_sum
-            elif type_val == "Waiting Time" and waiting_sum > 0: 
-                ws.cell(row=r, column=4).value = waiting_sum
-            elif type_val == "Preparation Time" and prep_sum > 0: 
-                ws.cell(row=r, column=4).value = prep_sum
+    base_row = role_base_row_map.get(position)
+    
+    if base_row:
+        # Write directly to Column 4 (D)
+        if travel_sum > 0: ws.cell(row=base_row + 1, column=4).value = travel_sum
+        if nt_sum > 0: ws.cell(row=base_row + 2, column=4).value = nt_sum
+        if ot_sum > 0: ws.cell(row=base_row + 3, column=4).value = ot_sum
+        if waiting_sum > 0: ws.cell(row=base_row + 4, column=4).value = waiting_sum
+        if prep_sum > 0: ws.cell(row=base_row + 5, column=4).value = prep_sum
     
     # --- FIND EXPENSE & LOCAL TRANSPORT SECTION ---
     expense_header_row = None
