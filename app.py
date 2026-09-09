@@ -4,8 +4,24 @@ import io
 from openpyxl import load_workbook
 
 # ============================================================
-# UTILITY FUNCTIONS
+# HELPERS
 # ============================================================
+def norm(s):
+    return ' '.join(str(s).split()).lower()
+
+def to_num(v):
+    if v is None:
+        return 0.0
+    if isinstance(v, (int, float)):
+        return 0.0 if pd.isna(v) else float(v)
+    s = str(v).replace(',', '').strip()
+    if not s or s.lower() == 'nan':
+        return 0.0
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
 def safe_write(ws, row_idx, col_idx, value):
     try:
         ws.cell(row=row_idx, column=col_idx).value = value
@@ -16,6 +32,71 @@ def safe_write(ws, row_idx, col_idx, value):
                 ws.cell(row=merged_range.min_row, column=merged_range.min_col).value = value
                 break
 
+# ============================================================
+# ROBUST TIMESHEET READER (auto-detect header row)
+# ============================================================
+HEADER_KEYWORDS = {'date', 'travel', 'nt', 'ot', 'waiting time', 'preparation', 'l.trpt', 'day'}
+
+def read_timesheet(file, sheet_name=0):
+    is_csv = file.name.lower().endswith('.csv')
+    file.seek(0)
+    raw = pd.read_csv(file, header=None) if is_csv else pd.read_excel(file, sheet_name=sheet_name, header=None)
+    
+    header_idx = 0
+    for i in range(min(25, len(raw))):
+        vals = {norm(v) for v in raw.iloc[i].values if pd.notna(v)}
+        if len(vals & HEADER_KEYWORDS) >= 3:
+            header_idx = i
+            break
+    
+    header = [norm(c) if pd.notna(c) else f'_blank_{j}' for j, c in enumerate(raw.iloc[header_idx].values)]
+    df = raw.iloc[header_idx + 1:].reset_index(drop=True)
+    df.columns = header
+    return df, header_idx
+
+COL_VARIANTS = {
+    'Travel':          ['travel', 'travel time', 'travel (hrs)', 'travel hrs'],
+    'Travel OT':       ['travel ot', 'travel time ot'],
+    'NT':              ['nt', 'normal time', 'normal', 'nt (hrs)'],
+    'OT':              ['ot', 'overtime', 'ot (hrs)'],
+    'Waiting time':    ['waiting time', 'waiting', 'waiting time (hrs)'],
+    'Waiting time OT': ['waiting time ot', 'waiting ot'],
+    'Preparation':     ['preparation', 'preparation time', 'prep'],
+    'L.Trpt':          ['l.trpt', 'local transport', 'local trpt', 'l trpt'],
+}
+
+def pick_column(df, key):
+    for v in COL_VARIANTS[key]:
+        if v in df.columns:
+            return v
+    return None
+
+def extract_totals_from_timesheet(df):
+    total_idx = None
+    for i in range(len(df)):
+        for v in df.iloc[i].values:
+            if isinstance(v, str) and norm(v) in ('total', 'total:', 'grand total', 'totals'):
+                total_idx = i
+                break
+        if total_idx is not None:
+            break
+    
+    totals = {}
+    for key in COL_VARIANTS:
+        col = pick_column(df, key)
+        if col is None:
+            totals[key] = 0.0
+            continue
+        if total_idx is not None:
+            totals[key] = to_num(df.iloc[total_idx][col])
+        else:
+            totals[key] = sum(to_num(x) for x in df[col].values)
+    
+    return totals, total_idx
+
+# ============================================================
+# EXPENSE UI
+# ============================================================
 def render_expense_ui(tab_key):
     if f"expenses_{tab_key}" not in st.session_state:
         st.session_state[f"expenses_{tab_key}"] = []
@@ -54,60 +135,24 @@ def render_expense_ui(tab_key):
     return st.session_state[f"expenses_{tab_key}"]
 
 # ============================================================
-# TIMESHEET EXTRACTION (TOTAL ROW)
-# ============================================================
-def extract_totals_from_timesheet(df):
-    df.columns = [str(c).strip() for c in df.columns]
-    
-    total_row = None
-    for _, row in df.iterrows():
-        for val in row.values:
-            if isinstance(val, str) and val.strip().lower() == 'total':
-                total_row = row
-                break
-        if total_row is not None:
-            break
-    
-    col_mapping = {
-        'Travel':          ['Travel', 'Travel Time'],
-        'NT':              ['NT', 'Normal Time'],
-        'OT':              ['OT', 'Overtime'],
-        'Waiting time':    ['Waiting time', 'Waiting Time'],
-        'Waiting time OT': ['Waiting time OT', 'Waiting Time OT'],
-        'Preparation':     ['Preparation', 'Preparation Time'],
-        'L.Trpt':          ['L.Trpt', 'Local transport'],
-    }
-    
-    totals = {}
-    for std_name, possible_names in col_mapping.items():
-        matching_col = next((c for c in df.columns if c.lower() in [p.lower() for p in possible_names]), None)
-        if matching_col is None:
-            totals[std_name] = 0.0
-            continue
-        if total_row is not None:
-            try:
-                val = total_row[matching_col]
-                totals[std_name] = float(val) if pd.notna(val) else 0.0
-            except (ValueError, TypeError):
-                totals[std_name] = 0.0
-        else:
-            totals[std_name] = pd.to_numeric(df[matching_col], errors='coerce').fillna(0).sum()
-    
-    return totals
-
-# ============================================================
 # MAIN INVOICE LOGIC
 # ============================================================
 def process_invoice_logic(
-    df, template_file, 
+    df, header_idx, template_file, 
     cust_name, inv_address, del_address, reference, cust_po, 
     proj_no, svc_type, vessel_name, vessel_no, engineer_name, 
     include_admin_fee, position, currency, user_expenses
 ):
-    totals = extract_totals_from_timesheet(df)
-    st.write("✅ Extracted totals from timesheet:", totals)
+    st.write(f"📄 Header row detected at Excel row {header_idx + 1}. Columns:", [c for c in df.columns if not c.startswith('_blank')])
     
-    travel_sum  = totals.get('Travel', 0)
+    totals, total_idx = extract_totals_from_timesheet(df)
+    if total_idx is not None:
+        st.write(f"✅ Total row found at data row {total_idx}. Extracted totals:", totals)
+    else:
+        st.warning("No 'Total' row found - summed all data rows instead.")
+        st.write("✅ Extracted totals (summed):", totals)
+    
+    travel_sum  = totals.get('Travel', 0) + totals.get('Travel OT', 0)
     nt_sum      = totals.get('NT', 0)
     ot_sum      = totals.get('OT', 0)
     waiting_sum = totals.get('Waiting time', 0) + totals.get('Waiting time OT', 0)
@@ -117,6 +162,7 @@ def process_invoice_logic(
     if template_file.name.lower().endswith('.csv'):
         raise ValueError("The Invoice Template must be an Excel file (.xlsx).")
         
+    template_file.seek(0)
     wb = load_workbook(template_file)
     
     target_sheet = currency
@@ -136,15 +182,10 @@ def process_invoice_logic(
     safe_write(ws, 14, 3, vessel_name)
     safe_write(ws, 15, 3, vessel_no)
     
-    # ============================================================
-    # ABSOLUTE ROW ASSIGNMENTS (COLUMN D = index 4)
-    # Service Technician        : D21:D27
-    # Service Engineer          : D31:D37
-    # Senior Service Engineer   : D41:D47
-    # Specialist Service Engineer: D51:D57
-    # Order: Travel Time, Normal Time, Overtime, Waiting Time,
-    #        Preparation Time, Daily rate (per day), Overtime (per hour)
-    # ============================================================
+    # --- ABSOLUTE HOURS ROWS (Column D) ---
+    # Service Technician D21:D27 | Service Engineer D31:D37
+    # Senior Service Engineer D41:D47 | Specialist D51:D57
+    # Order: Travel, Normal, Overtime, Waiting, Preparation, Daily rate, OT/hour
     ROLE_START_ROW = {
         "Service Technician": 21,
         "Service Engineer": 31,
@@ -155,24 +196,19 @@ def process_invoice_logic(
     start_row = ROLE_START_ROW[position]
     
     planned_writes = [
-        (start_row + 0, "Travel Time",       travel_sum),
-        (start_row + 1, "Normal Time",       nt_sum),
-        (start_row + 2, "Overtime",          ot_sum),
-        (start_row + 3, "Waiting Time",      waiting_sum),
-        (start_row + 4, "Preparation Time",  prep_sum),
-        # (start_row + 5) Daily rate (per day)  -> left blank (no offshore data in timesheet)
-        # (start_row + 6) Overtime (per hour)   -> left blank (no offshore data in timesheet)
+        (start_row + 0, "Travel Time",      travel_sum),
+        (start_row + 1, "Normal Time",      nt_sum),
+        (start_row + 2, "Overtime",         ot_sum),
+        (start_row + 3, "Waiting Time",     waiting_sum),
+        (start_row + 4, "Preparation Time", prep_sum),
     ]
     
     for row, label, val in planned_writes:
         if val:
-            safe_write(ws, row, 4, val)   # Column D
+            safe_write(ws, row, 4, val)
     
-    # --- READ-BACK VERIFICATION (proves the values landed) ---
-    verify = {}
-    for offset in range(7):
-        verify[f"D{start_row + offset}"] = ws.cell(row=start_row + offset, column=4).value
-    st.write(f"🔎 Read-back verification for {position} (D{start_row}:D{start_row + 6}):", verify)
+    verify = {f"D{start_row + o}": ws.cell(row=start_row + o, column=4).value for o in range(7)}
+    st.write(f"🔎 Read-back {position} (D{start_row}:D{start_row + 6}):", verify)
     
     # --- Expenses section ---
     expense_header_row = None
@@ -190,7 +226,6 @@ def process_invoice_logic(
         
         expense_queue = [e.copy() for e in user_expenses if e.get('desc')]
         
-        # Pass 1: match UI expenses against pre-listed descriptions (Column C)
         for r in range(expense_header_row + 1, expense_header_row + 25):
             desc_val = str(ws.cell(row=r, column=3).value or "").strip().lower()
             if not desc_val:
@@ -198,12 +233,11 @@ def process_invoice_logic(
             matched = next((e for e in expense_queue if e['desc'].lower() == desc_val), None)
             if matched:
                 if matched['qty'] > 0:
-                    safe_write(ws, r, 4, matched['qty'])     # Quantity = Column D
+                    safe_write(ws, r, 4, matched['qty'])
                 if matched['price'] > 0:
-                    safe_write(ws, r, 6, matched['price'])   # Price = Column F
+                    safe_write(ws, r, 6, matched['price'])
                 expense_queue.remove(matched)
         
-        # Pass 2: remaining expenses into empty placeholder rows
         for r in range(expense_header_row + 1, expense_header_row + 25):
             if not expense_queue:
                 break
@@ -217,7 +251,6 @@ def process_invoice_logic(
                 if exp['price'] > 0:
                     safe_write(ws, r, 6, exp['price'])
         
-        # Pass 3: Local transport quantity from timesheet L.Trpt total
         if l_trpt_sum > 0:
             for r in range(expense_header_row + 1, expense_header_row + 25):
                 desc_val = str(ws.cell(row=r, column=3).value or "").strip().lower()
@@ -286,13 +319,14 @@ with tab1:
             st.error("Please upload the Processed Timesheet AND the Invoice Template.")
         else:
             try:
+                timesheet_excel_t1.seek(0)
                 xls = pd.ExcelFile(timesheet_excel_t1)
                 sheet_names = xls.sheet_names
                 eng_sheet = next((s for s in sheet_names if 'engineer' in s.lower()), sheet_names[1] if len(sheet_names) > 1 else sheet_names[0])
-                df_t1 = pd.read_excel(timesheet_excel_t1, sheet_name=eng_sheet)
+                df_t1, hdr_t1 = read_timesheet(timesheet_excel_t1, sheet_name=eng_sheet)
                 
                 output = process_invoice_logic(
-                    df_t1, template_excel_t1, 
+                    df_t1, hdr_t1, template_excel_t1, 
                     cust_name_t1, inv_address_t1, del_address_t1, reference_t1, cust_po_t1, 
                     proj_no_t1, svc_type_t1, vessel_name_t1, vessel_no_t1, engineer_name_invoice_t1, 
                     include_admin_fee_t1, position_t1, currency_t1, user_expenses_t1
@@ -354,13 +388,10 @@ with tab2:
             st.error("Please upload the Client Timesheet AND the Invoice Template.")
         else:
             try:
-                if client_timesheet_t2.name.lower().endswith('.csv'):
-                    df_t2 = pd.read_csv(client_timesheet_t2)
-                else:
-                    df_t2 = pd.read_excel(client_timesheet_t2, sheet_name=0)
+                df_t2, hdr_t2 = read_timesheet(client_timesheet_t2, sheet_name=0)
                 
                 output = process_invoice_logic(
-                    df_t2, template_excel_t2, 
+                    df_t2, hdr_t2, template_excel_t2, 
                     cust_name_t2, inv_address_t2, del_address_t2, reference_t2, cust_po_t2, 
                     proj_no_t2, svc_type_t2, vessel_name_t2, vessel_no_t2, engineer_name_invoice_t2, 
                     include_admin_fee_t2, position_t2, currency_t2, user_expenses_t2
