@@ -113,23 +113,49 @@ def process_invoice_logic(
     safe_write(ws, 14, 3, vessel_name)
     safe_write(ws, 15, 3, vessel_no)
     
-    # Determine Row Offset based on Engineer Role
-    r_offset = 20
-    if position == "Service Engineer": r_offset = 30
-    elif position == "Senior Service Engineer": r_offset = 40
-    elif position == "Specialist Service Engineer": r_offset = 50
-        
-    # Inject Hours into Invoice Table
-    safe_write(ws, r_offset + 1, 4, travel_sum if travel_sum > 0 else "")
-    safe_write(ws, r_offset + 2, 4, nt_sum if nt_sum > 0 else "")
-    safe_write(ws, r_offset + 3, 4, ot_sum if ot_sum > 0 else "")
-    safe_write(ws, r_offset + 4, 4, waiting_sum if waiting_sum > 0 else "")
-    safe_write(ws, r_offset + 5, 4, prep_sum if prep_sum > 0 else "")
+    # --- DYNAMICALLY INJECT HOURS INTO THE CORRECT POSITION SECTION ---
+    target_pos = position.lower().strip()
+    pos_start_row = None
     
+    # 1. Locate the header row for the selected position
+    for r in range(10, 60):
+        # Look in the first few columns for the position name
+        for c in range(1, 4):
+            cell_val = str(ws.cell(row=r, column=c).value).lower().strip()
+            if target_pos == cell_val:
+                pos_start_row = r
+                break
+        if pos_start_row:
+            break
+            
+    # 2. Inject hours by mapping the 'Type' column
+    if pos_start_row:
+        for r in range(pos_start_row + 1, pos_start_row + 15):
+            type_val = str(ws.cell(row=r, column=3).value).strip() # Column C is Type
+            
+            # Identify which row matches which category and write to Column D (4)
+            if type_val == "Travel Time" and travel_sum > 0: safe_write(ws, r, 4, travel_sum)
+            elif type_val == "Normal Time" and nt_sum > 0: safe_write(ws, r, 4, nt_sum)
+            elif type_val == "Overtime" and ot_sum > 0: safe_write(ws, r, 4, ot_sum)
+            elif type_val == "Waiting Time" and waiting_sum > 0: safe_write(ws, r, 4, waiting_sum)
+            elif type_val == "Preparation Time" and prep_sum > 0: safe_write(ws, r, 4, prep_sum)
+    else:
+        # Fallback logic if dynamic search misses
+        r_offset = 20
+        if position == "Service Engineer": r_offset = 30
+        elif position == "Senior Service Engineer": r_offset = 40
+        elif position == "Specialist Service Engineer": r_offset = 50
+        
+        safe_write(ws, r_offset + 1, 4, travel_sum if travel_sum > 0 else "")
+        safe_write(ws, r_offset + 2, 4, nt_sum if nt_sum > 0 else "")
+        safe_write(ws, r_offset + 3, 4, ot_sum if ot_sum > 0 else "")
+        safe_write(ws, r_offset + 4, 4, waiting_sum if waiting_sum > 0 else "")
+        safe_write(ws, r_offset + 5, 4, prep_sum if prep_sum > 0 else "")
+    
+    # --- FIND EXPENSE & LOCAL TRANSPORT SECTION ---
     expense_row = 59
     local_transport_row = None
     
-    # Dynamically locate Expenses and Local Transport rows
     for row_idx in range(50, 75):
         col_b_val = str(ws.cell(row=row_idx, column=2).value).strip()
         col_c_val = str(ws.cell(row=row_idx, column=3).value).strip()
@@ -152,7 +178,6 @@ def process_invoice_logic(
 
     # Inject User Custom Expenses
     if user_expenses:
-        # Scan the rows immediately below the 'Expenses' header
         for row_idx in range(expense_row + 1, expense_row + 20):
             cell_desc = str(ws.cell(row=row_idx, column=3).value).strip()
             
