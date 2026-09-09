@@ -55,35 +55,37 @@ def render_expense_ui(tab_key):
     return st.session_state[f"expenses_{tab_key}"]
 
 def process_invoice_logic(
-    eng_df, client_df, template_file, 
+    df, template_file, 
     cust_name, inv_address, del_address, reference, cust_po, 
     proj_no, svc_type, vessel_name, vessel_no, engineer_name, 
     include_admin_fee, position, currency, user_expenses
 ):
     # Clean column names
-    eng_df.columns = eng_df.columns.str.strip()
-    client_df.columns = client_df.columns.str.strip()
+    df.columns = df.columns.str.strip()
 
-    # --- PROCESS ENGINEER TIMESHEET (Work Hours) ---
-    if 'Date' in eng_df.columns:
-        eng_df = eng_df[eng_df['Date'].astype(str).str.lower() != 'total']
-        
-    travel = pd.to_numeric(eng_df.get("Travel", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
-    travel_ot = pd.to_numeric(eng_df.get("Travel OT", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
+    # Remove total rows if present
+    if 'Date' in df.columns:
+        df = df[df['Date'].astype(str).str.lower() != 'total']
+
+    # Robust extraction supporting both Client and Engineer column formats
+    travel = pd.to_numeric(df.get("Travel", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
+    travel_ot = pd.to_numeric(df.get("Travel OT", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
     travel_sum = travel + travel_ot
     
-    nt_col = "Normal Time" if "Normal Time" in eng_df.columns else ("NT" if "NT" in eng_df.columns else None)
-    nt_sum = pd.to_numeric(eng_df[nt_col], errors="coerce").fillna(0).sum() if nt_col else 0.0
-    ot_sum = pd.to_numeric(eng_df.get("OT", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
+    nt_col = next((c for c in ["Normal Time", "NT"] if c in df.columns), None)
+    nt_sum = pd.to_numeric(df[nt_col], errors="coerce").fillna(0).sum() if nt_col else 0.0
     
-    waiting_sum = pd.to_numeric(eng_df.get("Waiting Time", eng_df.get("Waiting time", pd.Series(dtype=float))), errors="coerce").fillna(0).sum()
-    prep_sum = pd.to_numeric(eng_df.get("Preparation Time", eng_df.get("Preparation", pd.Series(dtype=float))), errors="coerce").fillna(0).sum()
+    ot_col = next((c for c in ["OT", "Overtime"] if c in df.columns), None)
+    ot_sum = pd.to_numeric(df[ot_col], errors="coerce").fillna(0).sum() if ot_col else 0.0
     
-    # --- PROCESS CLIENT TIMESHEET (Local Transport) ---
-    if 'Date' in client_df.columns:
-        client_df = client_df[client_df['Date'].astype(str).str.lower() != 'total']
-        
-    l_trpt_sum = pd.to_numeric(client_df.get("L.Trpt", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
+    waiting_base = pd.to_numeric(df.get("Waiting time", df.get("Waiting Time", pd.Series(dtype=float))), errors="coerce").fillna(0).sum()
+    waiting_ot = pd.to_numeric(df.get("Waiting time OT", df.get("Waiting Time OT", pd.Series(dtype=float))), errors="coerce").fillna(0).sum()
+    waiting_sum = waiting_base + waiting_ot
+    
+    prep_col = next((c for c in ["Preparation", "Preparation Time"] if c in df.columns), None)
+    prep_sum = pd.to_numeric(df[prep_col], errors="coerce").fillna(0).sum() if prep_col else 0.0
+    
+    l_trpt_sum = pd.to_numeric(df.get("L.Trpt", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
     
     # --- LOAD AND FILL INVOICE TEMPLATE ---
     if template_file.name.lower().endswith('.csv'):
@@ -95,7 +97,6 @@ def process_invoice_logic(
     sheet_map = {"SG": "SG", "CN": "CN", "KR": "KR", "EUR": "EUR", "USD": "USD"}
     target_sheet = sheet_map.get(currency, currency)
     
-    # Flexible sheet matching if exact match fails
     if target_sheet not in wb.sheetnames:
         matched = False
         for s in wb.sheetnames:
@@ -119,8 +120,7 @@ def process_invoice_logic(
     safe_write(ws, 14, 3, vessel_name)
     safe_write(ws, 15, 3, vessel_no)
     
-    # --- INJECT HOURS INTO THE HARDCODED POSITION SECTIONS ---
-    # Map the dropdown selection to the precise starting row based on the template structure
+    # --- INJECT HOURS INTO ABSOLUTE ROWS (D21-D27, D31-D37, D41-D47, D51-D57) ---
     role_base_row_map = {
         "Service Technician": 20,
         "Service Engineer": 30,
@@ -131,7 +131,6 @@ def process_invoice_logic(
     base_row = role_base_row_map.get(position)
     
     if base_row:
-        # Write directly to Column 4 (D)
         if travel_sum > 0: ws.cell(row=base_row + 1, column=4).value = travel_sum
         if nt_sum > 0: ws.cell(row=base_row + 2, column=4).value = nt_sum
         if ot_sum > 0: ws.cell(row=base_row + 3, column=4).value = ot_sum
@@ -167,7 +166,6 @@ def process_invoice_logic(
                 c3_val = str(ws.cell(row=r, column=3).value).strip()
                 c2_val = str(ws.cell(row=r, column=2).value).strip()
                 
-                # Try to match exact description in Column C
                 matched_exp = next((exp for exp in expense_queue if exp['desc'].lower() == c3_val.lower()), None)
                 if matched_exp:
                     if matched_exp['qty'] > 0: safe_write(ws, r, 4, matched_exp['qty'])
@@ -175,7 +173,6 @@ def process_invoice_logic(
                     expense_queue.remove(matched_exp)
                     continue
                     
-                # Try to match exact description in Column B
                 matched_exp_b = next((exp for exp in expense_queue if exp['desc'].lower() == c2_val.lower()), None)
                 if matched_exp_b:
                     if matched_exp_b['qty'] > 0: safe_write(ws, r, 4, matched_exp_b['qty'])
@@ -183,7 +180,6 @@ def process_invoice_logic(
                     expense_queue.remove(matched_exp_b)
                     continue
 
-                # Overwrite placeholder rows
                 if "ADD DESCRIPTION" in c2_val or "ADD DESCRIPTION" in c3_val or "ADD RELEVANT EXPENSES" in c2_val or "ADD RELEVANT EXPENSES" in c3_val:
                     exp_to_inject = expense_queue.pop(0)
                     
@@ -261,13 +257,10 @@ with tab1:
                 sheet_names = xls.sheet_names
                 
                 eng_sheet = next((s for s in sheet_names if 'engineer' in s.lower()), sheet_names[1] if len(sheet_names) > 1 else sheet_names[0])
-                client_sheet = next((s for s in sheet_names if 'client' in s.lower()), sheet_names[0])
-                
-                eng_df = pd.read_excel(timesheet_excel_t1, sheet_name=eng_sheet)
-                client_df = pd.read_excel(timesheet_excel_t1, sheet_name=client_sheet)
+                df_t1 = pd.read_excel(timesheet_excel_t1, sheet_name=eng_sheet)
                 
                 output = process_invoice_logic(
-                    eng_df, client_df, template_excel_t1, 
+                    df_t1, template_excel_t1, 
                     cust_name_t1, inv_address_t1, del_address_t1, reference_t1, cust_po_t1, 
                     proj_no_t1, svc_type_t1, vessel_name_t1, vessel_no_t1, engineer_name_invoice_t1, 
                     include_admin_fee_t1, position_t1, currency_t1, user_expenses_t1
@@ -281,14 +274,8 @@ with tab1:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_t1"
                 )
-            except KeyError as e:
-                st.error(f"Missing expected column in timesheet: {str(e)}. Please check the uploaded file format.")
-            except ValueError as e:
-                st.error(f"Error encountered: {str(e)}")
-            except zipfile.BadZipFile:
-                st.error("One of the uploaded files is not a valid Excel file or is corrupted.")
             except Exception as e:
-                st.error(f"An unexpected error occurred while processing the invoice: {str(e)}")
+                st.error(f"Error occurred while processing: {str(e)}")
 
 # ------------------------------------------------------------
 # TAB 2: STANDALONE TIMESHEET UPLOAD
@@ -336,14 +323,12 @@ with tab2:
         else:
             try:
                 if client_timesheet_t2.name.lower().endswith('.csv'):
-                    client_df = pd.read_csv(client_timesheet_t2)
+                    df_t2 = pd.read_csv(client_timesheet_t2)
                 else:
-                    client_df = pd.read_excel(client_timesheet_t2, sheet_name=0)
-                
-                eng_df = client_df.copy()
+                    df_t2 = pd.read_excel(client_timesheet_t2, sheet_name=0)
                 
                 output = process_invoice_logic(
-                    eng_df, client_df, template_excel_t2, 
+                    df_t2, template_excel_t2, 
                     cust_name_t2, inv_address_t2, del_address_t2, reference_t2, cust_po_t2, 
                     proj_no_t2, svc_type_t2, vessel_name_t2, vessel_no_t2, engineer_name_invoice_t2, 
                     include_admin_fee_t2, position_t2, currency_t2, user_expenses_t2
@@ -357,11 +342,5 @@ with tab2:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_t2"
                 )
-            except KeyError as e:
-                st.error(f"Missing expected column in timesheet: {str(e)}. Please check the uploaded file format.")
-            except ValueError as e:
-                st.error(f"Error encountered: {str(e)}")
-            except zipfile.BadZipFile:
-                st.error("One of the uploaded files is not a valid Excel file or is corrupted.")
             except Exception as e:
-                st.error(f"An unexpected error occurred while processing the invoice: {str(e)}")
+                st.error(f"Error occurred while processing: {str(e)}")
