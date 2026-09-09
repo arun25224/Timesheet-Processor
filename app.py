@@ -74,7 +74,6 @@ def extract_totals_from_timesheet(df):
     # Extract values from Total row with column mapping
     totals = {}
     
-    # Column mapping for different possible column names
     col_mapping = {
         'Travel': ['Travel', 'Travel Time'],
         'NT': ['NT', 'Normal Time'],
@@ -116,7 +115,7 @@ def process_invoice_logic(
     # Extract totals from timesheet
     totals = extract_totals_from_timesheet(df)
     
-    st.write(" Extracted totals from timesheet:", totals)
+    st.write("✅ Extracted totals from timesheet:", totals)
     
     # Calculate sums
     travel_sum = totals.get('Travel', 0)
@@ -159,7 +158,7 @@ def process_invoice_logic(
     safe_write(ws, 14, 3, vessel_name)
     safe_write(ws, 15, 3, vessel_no)
     
-    # Map positions to base rows
+    # Map positions to base rows (header row)
     role_base_row_map = {
         "Service Technician": 20,
         "Service Engineer": 30,
@@ -170,24 +169,32 @@ def process_invoice_logic(
     base_row = role_base_row_map.get(position)
     
     if base_row:
-        # Write hours to Column C (index 3) - Hours/#days column
+        # Write hours to Column D (index 4) - Hours/#days column
+        # Data rows start at base_row + 2
         if travel_sum > 0:
-            ws.cell(row=base_row + 1, column=3).value = travel_sum
+            ws.cell(row=base_row + 2, column=4).value = travel_sum
+            st.write(f"✏️ Writing Travel Time {travel_sum} to row {base_row + 2}, col 4 (D)")
         if nt_sum > 0:
-            ws.cell(row=base_row + 2, column=3).value = nt_sum
+            ws.cell(row=base_row + 3, column=4).value = nt_sum
+            st.write(f"✏️ Writing Normal Time {nt_sum} to row {base_row + 3}, col 4 (D)")
         if ot_sum > 0:
-            ws.cell(row=base_row + 3, column=3).value = ot_sum
+            ws.cell(row=base_row + 4, column=4).value = ot_sum
+            st.write(f"✏️ Writing Overtime {ot_sum} to row {base_row + 4}, col 4 (D)")
         if waiting_sum > 0:
-            ws.cell(row=base_row + 4, column=3).value = waiting_sum
+            ws.cell(row=base_row + 5, column=4).value = waiting_sum
+            st.write(f"✏️ Writing Waiting Time {waiting_sum} to row {base_row + 5}, col 4 (D)")
         if prep_sum > 0:
-            ws.cell(row=base_row + 5, column=3).value = prep_sum
+            ws.cell(row=base_row + 6, column=4).value = prep_sum
+            st.write(f"✏️ Writing Preparation Time {prep_sum} to row {base_row + 6}, col 4 (D)")
     
     # Handle Local Transport in Expenses section
     if l_trpt_sum > 0:
         for r in range(1, ws.max_row + 1):
-            cell_val = str(ws.cell(row=r, column=2).value or "").lower()
+            # Search in Column C (Description)
+            cell_val = str(ws.cell(row=r, column=3).value or "").lower()
             if "local transport" in cell_val:
-                ws.cell(row=r, column=3).value = l_trpt_sum
+                ws.cell(row=r, column=4).value = l_trpt_sum  # Write to Column D (Quantity)
+                st.write(f"✏️ Writing Local Transport {l_trpt_sum} to row {r}, col 4 (D)")
                 break
     
     # Inject User Custom Expenses dynamically
@@ -219,10 +226,11 @@ def process_invoice_logic(
                     else:
                         safe_write(ws, r, 3, exp_to_inject['desc'])
                         
+                    # Quantity is Column D (4), Price is Column F (6)
                     if exp_to_inject['qty'] > 0:
-                        safe_write(ws, r, 3, exp_to_inject['qty'])
+                        safe_write(ws, r, 4, exp_to_inject['qty'])
                     if exp_to_inject['price'] > 0:
-                        safe_write(ws, r, 5, exp_to_inject['price'])
+                        safe_write(ws, r, 6, exp_to_inject['price'])
     
     # Export Final Invoice
     invoice_output = io.BytesIO()
