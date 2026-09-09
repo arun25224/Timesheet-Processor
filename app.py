@@ -123,27 +123,29 @@ def process_invoice_logic(
     target_pos = position.lower().strip()
     pos_start_row = None
     
-    # Locate the header row for the selected position
-    for r in range(10, 60):
-        for c in range(1, 4):
-            cell_val = str(ws.cell(row=r, column=c).value).lower().strip()
-            if target_pos in cell_val:
-                pos_start_row = r
-                break
-        if pos_start_row:
+    # Strictly locate the header row for the selected position in Column B (2)
+    for r in range(15, 60):
+        cell_val = str(ws.cell(row=r, column=2).value).lower().strip()
+        if cell_val == target_pos:  # Strict match prevents "Service Engineer" from matching "Senior Service Engineer"
+            pos_start_row = r
             break
             
-    # Inject hours by mapping the 'Type' column
+    # Inject hours by mapping the 'Type' column strictly into Column D (4)
     if pos_start_row:
-        for r in range(pos_start_row + 1, pos_start_row + 15):
+        for r in range(pos_start_row + 1, pos_start_row + 10):
             type_val = str(ws.cell(row=r, column=3).value).strip()
             
             # Column 4 is Hours/#days
-            if type_val == "Travel Time" and travel_sum > 0: safe_write(ws, r, 4, travel_sum)
-            elif type_val == "Normal Time" and nt_sum > 0: safe_write(ws, r, 4, nt_sum)
-            elif type_val == "Overtime" and ot_sum > 0: safe_write(ws, r, 4, ot_sum)
-            elif type_val == "Waiting Time" and waiting_sum > 0: safe_write(ws, r, 4, waiting_sum)
-            elif type_val == "Preparation Time" and prep_sum > 0: safe_write(ws, r, 4, prep_sum)
+            if type_val == "Travel Time" and travel_sum > 0: 
+                ws.cell(row=r, column=4).value = travel_sum
+            elif type_val == "Normal Time" and nt_sum > 0: 
+                ws.cell(row=r, column=4).value = nt_sum
+            elif type_val == "Overtime" and ot_sum > 0: 
+                ws.cell(row=r, column=4).value = ot_sum
+            elif type_val == "Waiting Time" and waiting_sum > 0: 
+                ws.cell(row=r, column=4).value = waiting_sum
+            elif type_val == "Preparation Time" and prep_sum > 0: 
+                ws.cell(row=r, column=4).value = prep_sum
     
     # --- FIND EXPENSE & LOCAL TRANSPORT SECTION ---
     expense_header_row = None
