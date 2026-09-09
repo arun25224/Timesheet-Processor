@@ -1,16 +1,13 @@
 import streamlit as st
 import pandas as pd
 import io
-import zipfile
 from openpyxl import load_workbook
 
-# ============================================================
-# UTILITY FUNCTIONS
-# ============================================================
 def safe_write(ws, row_idx, col_idx, value):
+    """Safely write to a cell, handling merged cells"""
     try:
         ws.cell(row=row_idx, column=col_idx).value = value
-    except AttributeError:
+    except Exception as e:
         coord = ws.cell(row=row_idx, column=col_idx).coordinate
         for merged_range in ws.merged_cells.ranges:
             if coord in merged_range:
@@ -54,47 +51,108 @@ def render_expense_ui(tab_key):
         
     return st.session_state[f"expenses_{tab_key}"]
 
+def extract_totals_from_timesheet(df):
+    """Extract total values from the timesheet - looking for the Total row"""
+    
+    # Clean column names
+    df.columns = df.columns.str.strip()
+    
+    # Find the Total row (case-insensitive)
+    total_row = None
+    for idx, row in df.iterrows():
+        # Check if any column contains 'Total'
+        for val in row.values:
+            if isinstance(val, str) and val.lower().strip() == 'total':
+                total_row = row
+                break
+        if total_row is not None:
+            break
+    
+    if total_row is None:
+        # If no Total row found, sum all numeric columns
+        st.warning("No 'Total' row found. Summing all rows.")
+        totals = {}
+        
+        # Map column names to standard names
+        col_mapping = {
+            'Travel': 'Travel',
+            'NT': 'NT',
+            'Normal Time': 'NT',
+            'OT': 'OT',
+            'Overtime': 'OT',
+            'Waiting time': 'Waiting time',
+            'Waiting time OT': 'Waiting time OT',
+            'Waiting Time OT': 'Waiting time OT',
+            'Preparation': 'Preparation',
+            'Preparation Time': 'Preparation',
+            'L.Trpt': 'L.Trpt',
+            'Local transport': 'L.Trpt'
+        }
+        
+        for col in df.columns:
+            for key, std_name in col_mapping.items():
+                if key.lower() == col.lower():
+                    totals[std_name] = pd.to_numeric(df[col], errors='coerce').fillna(0).sum()
+                    break
+        
+        return totals
+    
+    # Extract values from Total row
+    totals = {}
+    
+    # Map columns with various possible names
+    col_mapping = {
+        'Travel': ['Travel', 'Travel Time'],
+        'NT': ['NT', 'Normal Time', 'Normal time'],
+        'OT': ['OT', 'Overtime', 'ot'],
+        'Waiting time': ['Waiting time', 'Waiting Time'],
+        'Waiting time OT': ['Waiting time OT', 'Waiting Time OT'],
+        'Preparation': ['Preparation', 'Preparation Time'],
+        'L.Trpt': ['L.Trpt', 'Local transport', 'Local trpt']
+    }
+    
+    for std_name, possible_names in col_mapping.items():
+        value = 0
+        for name in possible_names:
+            # Case-insensitive column search
+            matching_col = None
+            for col in df.columns:
+                if col.lower() == name.lower():
+                    matching_col = col
+                    break
+            
+            if matching_col is not None:
+                try:
+                    val = total_row[matching_col]
+                    if pd.notna(val):
+                        value += float(val)
+                except (ValueError, TypeError):
+                    pass
+        
+        totals[std_name] = value
+    
+    return totals
+
 def process_invoice_logic(
     df, template_file, 
     cust_name, inv_address, del_address, reference, cust_po, 
     proj_no, svc_type, vessel_name, vessel_no, engineer_name, 
     include_admin_fee, position, currency, user_expenses
 ):
-    # Clean column names
-    df.columns = df.columns.str.strip()
-
-    # Remove total rows if present
-    if 'Date' in df.columns:
-        df = df[df['Date'].astype(str).str.lower() != 'total']
-
-    # Robust extraction supporting both Client and Engineer column formats
-    travel_col = next((c for c in ["Travel", "Travel Time", "Travel time"] if c in df.columns), None)
-    travel = pd.to_numeric(df[travel_col], errors="coerce").fillna(0).sum() if travel_col else 0.0
+    # Extract totals from timesheet
+    totals = extract_totals_from_timesheet(df)
     
-    travel_ot_col = next((c for c in ["Travel OT", "Travel ot", "Travel Time OT"] if c in df.columns), None)
-    travel_ot = pd.to_numeric(df[travel_ot_col], errors="coerce").fillna(0).sum() if travel_ot_col else 0.0
-    travel_sum = travel + travel_ot
+    st.write("Extracted totals:", totals)  # Debug output
     
-    nt_col = next((c for c in ["Normal Time", "NT", "Normal time", "nt"] if c in df.columns), None)
-    nt_sum = pd.to_numeric(df[nt_col], errors="coerce").fillna(0).sum() if nt_col else 0.0
+    # Calculate sums
+    travel_sum = totals.get('Travel', 0)
+    nt_sum = totals.get('NT', 0)
+    ot_sum = totals.get('OT', 0)
+    waiting_sum = totals.get('Waiting time', 0) + totals.get('Waiting time OT', 0)
+    prep_sum = totals.get('Preparation', 0)
+    l_trpt_sum = totals.get('L.Trpt', 0)
     
-    ot_col = next((c for c in ["OT", "Overtime", "ot"] if c in df.columns), None)
-    ot_sum = pd.to_numeric(df[ot_col], errors="coerce").fillna(0).sum() if ot_col else 0.0
-    
-    waiting_base_col = next((c for c in ["Waiting time", "Waiting Time", "Waiting"] if c in df.columns), None)
-    waiting_base = pd.to_numeric(df[waiting_base_col], errors="coerce").fillna(0).sum() if waiting_base_col else 0.0
-    
-    waiting_ot_col = next((c for c in ["Waiting time OT", "Waiting Time OT", "Waiting OT"] if c in df.columns), None)
-    waiting_ot = pd.to_numeric(df[waiting_ot_col], errors="coerce").fillna(0).sum() if waiting_ot_col else 0.0
-    waiting_sum = waiting_base + waiting_ot
-    
-    prep_col = next((c for c in ["Preparation", "Preparation Time", "Prep"] if c in df.columns), None)
-    prep_sum = pd.to_numeric(df[prep_col], errors="coerce").fillna(0).sum() if prep_col else 0.0
-    
-    l_trpt_col = next((c for c in ["L.Trpt", "Local Transport", "Local transport", "Local trpt"] if c in df.columns), None)
-    l_trpt_sum = pd.to_numeric(df[l_trpt_col], errors="coerce").fillna(0).sum() if l_trpt_col else 0.0
-    
-    # --- LOAD AND FILL INVOICE TEMPLATE ---
+    # Load template
     if template_file.name.lower().endswith('.csv'):
         raise ValueError("The Invoice Template must be an Excel file (.xlsx).")
         
@@ -127,7 +185,13 @@ def process_invoice_logic(
     safe_write(ws, 14, 3, vessel_name)
     safe_write(ws, 15, 3, vessel_no)
     
-    # --- INJECT HOURS INTO ABSOLUTE ROWS (Column C / Index 3) ---
+    # Map positions to base rows (Row where "Category" header is)
+    # Looking at your template:
+    # Service technician: Row 20
+    # Service engineer: Row 30
+    # Senior Service Engineer: Row 40
+    # Specialist Service Engineer: Row 50
+    
     role_base_row_map = {
         "Service Technician": 20,
         "Service Engineer": 30,
@@ -138,63 +202,75 @@ def process_invoice_logic(
     base_row = role_base_row_map.get(position)
     
     if base_row:
-        # Hours go into Column 3 (Hours/#days) to avoid overwriting Column 4 (Rate)
-        if travel_sum > 0: ws.cell(row=base_row + 1, column=3).value = travel_sum
-        if nt_sum > 0: ws.cell(row=base_row + 2, column=3).value = nt_sum
-        if ot_sum > 0: ws.cell(row=base_row + 3, column=3).value = ot_sum
-        if waiting_sum > 0: ws.cell(row=base_row + 4, column=3).value = waiting_sum
-        if prep_sum > 0: ws.cell(row=base_row + 5, column=3).value = prep_sum
-    
-    # --- FIND EXPENSE & LOCAL TRANSPORT SECTION ---
-    expense_header_row = None
-    for r in range(50, 80):
-        val = str(ws.cell(row=r, column=2).value).strip().lower()
-        if "expenses" in val:
-            expense_header_row = r
-            break
-            
-    if expense_header_row:
-        safe_write(ws, expense_header_row + 2, 3, engineer_name)
+        # Write hours to Column D (Hours/#days column)
+        # Travel Time is at base_row + 1
+        # Normal Time is at base_row + 2
+        # Overtime is at base_row + 3
+        # Waiting Time is at base_row + 4
+        # Preparation Time is at base_row + 5
         
-        # Find Local Transport and inject calculated units
-        if l_trpt_sum > 0:
-            for r in range(expense_header_row, expense_header_row + 25):
-                c2_val = str(ws.cell(row=r, column=2).value).lower()
-                c1_val = str(ws.cell(row=r, column=1).value).lower()
-                if "local transport" in c2_val or "local transport" in c1_val:
-                    safe_write(ws, r, 3, l_trpt_sum) # Quantity is Col 3
-                    break
-
-        # Inject User Custom Expenses dynamically
-        if user_expenses:
+        if travel_sum > 0:
+            ws.cell(row=base_row + 1, column=4).value = travel_sum
+            st.write(f"Writing Travel Time {travel_sum} to row {base_row + 1}, col 4")
+        if nt_sum > 0:
+            ws.cell(row=base_row + 2, column=4).value = nt_sum
+            st.write(f"Writing Normal Time {nt_sum} to row {base_row + 2}, col 4")
+        if ot_sum > 0:
+            ws.cell(row=base_row + 3, column=4).value = ot_sum
+            st.write(f"Writing Overtime {ot_sum} to row {base_row + 3}, col 4")
+        if waiting_sum > 0:
+            ws.cell(row=base_row + 4, column=4).value = waiting_sum
+            st.write(f"Writing Waiting Time {waiting_sum} to row {base_row + 4}, col 4")
+        if prep_sum > 0:
+            ws.cell(row=base_row + 5, column=4).value = prep_sum
+            st.write(f"Writing Preparation Time {prep_sum} to row {base_row + 5}, col 4")
+    
+    # Handle Local Transport in Expenses section
+    if l_trpt_sum > 0:
+        # Find the expenses section and local transport row
+        for r in range(1, ws.max_row + 1):
+            cell_val = str(ws.cell(row=r, column=2).value or "").lower()
+            if "local transport" in cell_val:
+                ws.cell(row=r, column=3).value = l_trpt_sum  # Quantity column
+                st.write(f"Writing Local Transport {l_trpt_sum} to row {r}, col 3")
+                break
+    
+    # Inject User Custom Expenses dynamically
+    if user_expenses:
+        expense_header_row = None
+        for r in range(50, 80):
+            val = str(ws.cell(row=r, column=2).value or "").strip().lower()
+            if "expenses" in val:
+                expense_header_row = r
+                break
+        
+        if expense_header_row:
+            safe_write(ws, expense_header_row + 2, 3, engineer_name)
+            
             expense_queue = user_expenses.copy()
             
             for r in range(expense_header_row + 1, expense_header_row + 25):
-                if not expense_queue: break
+                if not expense_queue:
+                    break
                 
-                c3_val = str(ws.cell(row=r, column=3).value).strip()
-                c2_val = str(ws.cell(row=r, column=2).value).strip()
-                c1_val = str(ws.cell(row=r, column=1).value).strip()
+                c2_val = str(ws.cell(row=r, column=2).value or "").strip()
+                c3_val = str(ws.cell(row=r, column=3).value or "").strip()
                 
-                # Match by Description (Col 2) or Category (Col 1)
-                matched_exp = next((exp for exp in expense_queue if exp['desc'].lower() == c2_val.lower() or exp['desc'].lower() == c1_val.lower()), None)
-                
-                if matched_exp:
-                    if matched_exp['qty'] > 0: safe_write(ws, r, 3, matched_exp['qty']) # Quantity is Col 3
-                    if matched_exp['price'] > 0: safe_write(ws, r, 5, matched_exp['price']) # Price is Col 5
-                    expense_queue.remove(matched_exp)
-                    continue
-
-                # If it's a placeholder row like "[ADD RELEVANT EXPENSES HERE]"
-                if "ADD RELEVANT EXPENSES" in c1_val or "ADD RELEVANT EXPENSES" in c2_val or "ADD DESCRIPTION" in c1_val or "ADD DESCRIPTION" in c2_val:
+                # Check if this is a placeholder row
+                if "ADD RELEVANT EXPENSES" in c2_val or "ADD RELEVANT EXPENSES" in c3_val:
                     exp_to_inject = expense_queue.pop(0)
                     
-                    safe_write(ws, r, 1, exp_to_inject['desc']) # Category
-                    safe_write(ws, r, 2, exp_to_inject['desc']) # Description
+                    # Write description to column 2 or 3 depending on which has placeholder
+                    if "ADD RELEVANT EXPENSES" in c2_val:
+                        safe_write(ws, r, 2, exp_to_inject['desc'])
+                    else:
+                        safe_write(ws, r, 3, exp_to_inject['desc'])
                         
-                    if exp_to_inject['qty'] > 0: safe_write(ws, r, 3, exp_to_inject['qty']) # Quantity
-                    if exp_to_inject['price'] > 0: safe_write(ws, r, 5, exp_to_inject['price']) # Price
-
+                    if exp_to_inject['qty'] > 0:
+                        safe_write(ws, r, 3, exp_to_inject['qty'])  # Quantity is column 3
+                    if exp_to_inject['price'] > 0:
+                        safe_write(ws, r, 5, exp_to_inject['price'])  # Price is column 5
+    
     # Export Final Invoice
     invoice_output = io.BytesIO()
     wb.save(invoice_output)
@@ -202,149 +278,79 @@ def process_invoice_logic(
     
     return invoice_output
 
-# ============================================================
 # STREAMLIT UI
-# ============================================================
 st.set_page_config(page_title="Invoice Generator", layout="wide")
 
 st.title("Final Invoice Generation")
-st.write("Select your timesheet format and generate the final invoice template.")
+st.write("Upload your timesheet and generate the invoice.")
 
-tab1, tab2 = st.tabs(["Single Timesheet Upload (Combined Excel)", "Standalone Timesheet Upload (.csv or .xlsx)"])
+# File uploads
+col1, col2 = st.columns(2)
+with col1:
+    timesheet_file = st.file_uploader("Upload Timesheet", type=["xlsx", "csv"], key="ts_upload")
+with col2:
+    template_file = st.file_uploader("Upload Invoice Template", type=["xlsx"], key="inv_upload")
 
-# ------------------------------------------------------------
-# TAB 1: SINGLE TIMESHEET UPLOAD
-# ------------------------------------------------------------
-with tab1:
-    st.markdown("### 1. Upload Required Files")
-    col1, col2 = st.columns(2)
-    with col1:
-        timesheet_excel_t1 = st.file_uploader("Upload Processed Timesheet (Excel)", type=["xlsx"], key="ts_upload_t1")
-    with col2:
-        template_excel_t1 = st.file_uploader("Upload Blank Invoice Template", type=["xlsx"], key="inv_upload_t1")
-        
-    st.markdown("### 2. Enter Information")
-    c1_t1, c2_t1 = st.columns(2)
-    with c1_t1:
-        work_order_t1 = st.text_input("Work Order Number", value="NeedsConfirmation", key="wo_t1")
-        cust_name_t1 = st.text_input("Customer name", key="cust_name_t1")
-        inv_address_t1 = st.text_input("Invoicing address", key="inv_addr_t1")
-        del_address_t1 = st.text_input("Delivery address", key="del_addr_t1")
-        reference_t1 = st.text_input("Reference", key="ref_t1")
-    with c2_t1:
-        cust_po_t1 = st.text_input("Customer PO", key="po_t1")
-        proj_no_t1 = st.text_input("Project No", key="proj_t1")
-        svc_type_t1 = st.text_input("Service Type", key="svc_t1")
-        vessel_name_t1 = st.text_input("Vessel Name", key="vessel_t1")
-        vessel_no_t1 = st.text_input("Vessel No (if applicable)", key="vessel_no_t1")
-        engineer_name_invoice_t1 = st.text_input("Engineer Name (For Expenses)", key="eng_name_t1")
+st.markdown("### Enter Information")
+c1, c2 = st.columns(2)
+with c1:
+    cust_name = st.text_input("Customer name", key="cust_name")
+    inv_address = st.text_input("Invoicing address", key="inv_addr")
+    del_address = st.text_input("Delivery address", key="del_addr")
+    reference = st.text_input("Reference", key="ref")
+with c2:
+    cust_po = st.text_input("Customer PO", key="po")
+    proj_no = st.text_input("Project No", key="proj")
+    svc_type = st.text_input("Service Type", key="svc")
+    vessel_name = st.text_input("Vessel Name", key="vessel")
+    vessel_no = st.text_input("Vessel No (if applicable)", key="vessel_no")
+    engineer_name = st.text_input("Engineer Name (For Expenses)", key="eng_name")
 
-    st.markdown("### 3. Service & Role Details")
-    c3_t1, c4_t1, c5_t1 = st.columns(3)
-    with c3_t1:
-        currency_t1 = st.selectbox("Select Currency:", ["SG", "CN", "KR", "EUR", "USD"], key="curr_t1")
-    with c4_t1:
-        include_admin_fee_t1 = st.radio("Include 10% Admin Fee?", ["Yes", "No"], key="admin_fee_t1")
-    with c5_t1:
-        position_t1 = st.selectbox("Assign Hours to Position:", [
-            "Service Technician", "Service Engineer", "Senior Service Engineer", "Specialist Service Engineer"
-        ], key="pos_t1")
+st.markdown("### Service & Role Details")
+c3, c4, c5 = st.columns(3)
+with c3:
+    currency = st.selectbox("Select Currency:", ["SG", "CN", "KR", "EUR", "USD"], key="curr")
+with c4:
+    include_admin_fee = st.radio("Include 10% Admin Fee?", ["Yes", "No"], key="admin_fee")
+with c5:
+    position = st.selectbox("Assign Hours to Position:", [
+        "Service Technician", "Service Engineer", "Senior Service Engineer", "Specialist Service Engineer"
+    ], key="pos")
 
-    user_expenses_t1 = render_expense_ui("t1")
+user_expenses = render_expense_ui("main")
 
-    if st.button("Generate Final Invoice", type="primary", key="btn_t1"):
-        if not timesheet_excel_t1 or not template_excel_t1:
-            st.error("Please upload the Processed Timesheet AND the Invoice Template.")
-        else:
-            try:
-                xls = pd.ExcelFile(timesheet_excel_t1)
-                sheet_names = xls.sheetnames
-                
-                eng_sheet = next((s for s in sheet_names if 'engineer' in s.lower()), sheet_names[1] if len(sheet_names) > 1 else sheet_names[0])
-                df_t1 = pd.read_excel(timesheet_excel_t1, sheet_name=eng_sheet)
-                
-                output = process_invoice_logic(
-                    df_t1, template_excel_t1, 
-                    cust_name_t1, inv_address_t1, del_address_t1, reference_t1, cust_po_t1, 
-                    proj_no_t1, svc_type_t1, vessel_name_t1, vessel_no_t1, engineer_name_invoice_t1, 
-                    include_admin_fee_t1, position_t1, currency_t1, user_expenses_t1
-                )
-                
-                st.success("Invoice Generated Successfully")
-                st.download_button(
-                    label="Download Final Invoice",
-                    data=output,
-                    file_name=f"Invoice_{cust_name_t1 or 'Completed'}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="dl_t1"
-                )
-            except Exception as e:
-                st.error(f"Error occurred while processing: {str(e)}")
-
-# ------------------------------------------------------------
-# TAB 2: STANDALONE TIMESHEET UPLOAD
-# ------------------------------------------------------------
-with tab2:
-    st.markdown("### 1. Upload Required Files")
-    col1_t2, col2_t2 = st.columns(2)
-    with col1_t2:
-        client_timesheet_t2 = st.file_uploader("Upload Client Timesheet", type=["xlsx", "csv"], key="cli_upload_t2")
-    with col2_t2:
-        template_excel_t2 = st.file_uploader("Upload Blank Invoice Template", type=["xlsx", "csv"], key="inv_upload_t2")
-        
-    st.markdown("### 2. Enter Information")
-    c1_t2, c2_t2 = st.columns(2)
-    with c1_t2:
-        work_order_t2 = st.text_input("Work Order Number", value="NeedsConfirmation", key="wo_t2")
-        cust_name_t2 = st.text_input("Customer name", key="cust_name_t2")
-        inv_address_t2 = st.text_input("Invoicing address", key="inv_addr_t2")
-        del_address_t2 = st.text_input("Delivery address", key="del_addr_t2")
-        reference_t2 = st.text_input("Reference", key="ref_t2")
-    with c2_t2:
-        cust_po_t2 = st.text_input("Customer PO", key="po_t2")
-        proj_no_t2 = st.text_input("Project No", key="proj_t2")
-        svc_type_t2 = st.text_input("Service Type", key="svc_t2")
-        vessel_name_t2 = st.text_input("Vessel Name", key="vessel_t2")
-        vessel_no_t2 = st.text_input("Vessel No (if applicable)", key="vessel_no_t2")
-        engineer_name_invoice_t2 = st.text_input("Engineer Name (For Expenses)", key="eng_name_t2")
-
-    st.markdown("### 3. Service & Role Details")
-    c3_t2, c4_t2, c5_t2 = st.columns(3)
-    with c3_t2:
-        currency_t2 = st.selectbox("Select Currency:", ["SG", "CN", "KR", "EUR", "USD"], key="curr_t2")
-    with c4_t2:
-        include_admin_fee_t2 = st.radio("Include 10% Admin Fee?", ["Yes", "No"], key="admin_fee_t2")
-    with c5_t2:
-        position_t2 = st.selectbox("Assign Hours to Position:", [
-            "Service Technician", "Service Engineer", "Senior Service Engineer", "Specialist Service Engineer"
-        ], key="pos_t2")
-
-    user_expenses_t2 = render_expense_ui("t2")
-
-    if st.button("Generate Final Invoice", type="primary", key="btn_t2"):
-        if not client_timesheet_t2 or not template_excel_t2:
-            st.error("Please upload the Client Timesheet AND the Invoice Template.")
-        else:
-            try:
-                if client_timesheet_t2.name.lower().endswith('.csv'):
-                    df_t2 = pd.read_csv(client_timesheet_t2)
-                else:
-                    df_t2 = pd.read_excel(client_timesheet_t2, sheet_name=0)
-                
-                output = process_invoice_logic(
-                    df_t2, template_excel_t2, 
-                    cust_name_t2, inv_address_t2, del_address_t2, reference_t2, cust_po_t2, 
-                    proj_no_t2, svc_type_t2, vessel_name_t2, vessel_no_t2, engineer_name_invoice_t2, 
-                    include_admin_fee_t2, position_t2, currency_t2, user_expenses_t2
-                )
-                
-                st.success("Invoice Generated Successfully")
-                st.download_button(
-                    label="Download Final Invoice",
-                    data=output,
-                    file_name=f"Invoice_{cust_name_t2 or 'Completed'}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="dl_t2"
-                )
-            except Exception as e:
-                st.error(f"Error occurred while processing: {str(e)}")
+if st.button("Generate Final Invoice", type="primary"):
+    if not timesheet_file or not template_file:
+        st.error("Please upload both the Timesheet AND the Invoice Template.")
+    else:
+        try:
+            # Read timesheet
+            if timesheet_file.name.lower().endswith('.csv'):
+                df = pd.read_csv(timesheet_file)
+            else:
+                df = pd.read_excel(timesheet_file, sheet_name=0)
+            
+            st.write("Timesheet columns:", df.columns.tolist())
+            st.write("Timesheet data preview:")
+            st.dataframe(df.head())
+            
+            # Process invoice
+            output = process_invoice_logic(
+                df, template_file, 
+                cust_name, inv_address, del_address, reference, cust_po, 
+                proj_no, svc_type, vessel_name, vessel_no, engineer_name, 
+                include_admin_fee, position, currency, user_expenses
+            )
+            
+            st.success("Invoice Generated Successfully!")
+            st.download_button(
+                label="Download Final Invoice",
+                data=output,
+                file_name=f"Invoice_{cust_name or 'Completed'}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl"
+            )
+        except Exception as e:
+            st.error(f"Error occurred while processing: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
