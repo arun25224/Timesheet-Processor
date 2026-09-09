@@ -44,7 +44,7 @@ def render_expense_ui(tab_key):
             exp['price'] = st.number_input("Price (SGD)", min_value=0.0, value=float(exp.get('price', 0.0)), step=0.01, key=f"price_{tab_key}_{i}")
         with col4:
             st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("X", key=f"del_{tab_key}_{i}"):
+            if st.button("Remove", key=f"del_{tab_key}_{i}"):
                 st.session_state[f"expenses_{tab_key}"].pop(i)
                 st.rerun()
                 
@@ -263,8 +263,15 @@ with tab1:
             st.error("Please upload the Processed Timesheet AND the Invoice Template.")
         else:
             try:
-                eng_df = pd.read_excel(timesheet_excel_t1, sheet_name="Engineer", skiprows=2)
-                client_df = pd.read_excel(timesheet_excel_t1, sheet_name="Client", skiprows=2)
+                xls = pd.ExcelFile(timesheet_excel_t1)
+                sheet_names = xls.sheet_names
+                
+                # Dynamically locate sheets based on keywords, fallback to index
+                eng_sheet = next((s for s in sheet_names if 'engineer' in s.lower()), sheet_names[1] if len(sheet_names) > 1 else sheet_names[0])
+                client_sheet = next((s for s in sheet_names if 'client' in s.lower()), sheet_names[0])
+                
+                eng_df = pd.read_excel(timesheet_excel_t1, sheet_name=eng_sheet, skiprows=2)
+                client_df = pd.read_excel(timesheet_excel_t1, sheet_name=client_sheet, skiprows=2)
                 
                 output = process_invoice_logic(
                     eng_df, client_df, template_excel_t1, 
@@ -281,26 +288,10 @@ with tab1:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_t1"
                 )
-                
-                wo_num = work_order_t1.strip() or "NeedsConfirmation"
-                st.download_button(
-                    label="Download Client Timesheet",
-                    data=client_df.to_csv(index=False).encode('utf-8'),
-                    file_name=f"Timesheet_Client_{wo_num}.csv",
-                    mime="text/csv",
-                    key="dl_client_t1"
-                )
-                st.download_button(
-                    label="Download Engineer Timesheet",
-                    data=eng_df.to_csv(index=False).encode('utf-8'),
-                    file_name=f"Timesheet_Engineer_{wo_num}.csv",
-                    mime="text/csv",
-                    key="dl_eng_t1"
-                )
             except KeyError as e:
                 st.error(f"Missing expected column in timesheet: {str(e)}. Please check the uploaded file format.")
             except ValueError as e:
-                st.error(f"Value error encountered: {str(e)}")
+                st.error(f"Error encountered: {str(e)}")
             except zipfile.BadZipFile:
                 st.error("One of the uploaded files is not a valid Excel file or is corrupted.")
             except Exception as e:
@@ -374,26 +365,10 @@ with tab2:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_t2"
                 )
-                
-                wo_num = work_order_t2.strip() or "NeedsConfirmation"
-                st.download_button(
-                    label="Download Client Timesheet",
-                    data=client_df.to_csv(index=False).encode('utf-8'),
-                    file_name=f"Timesheet_Client_{wo_num}.csv",
-                    mime="text/csv",
-                    key="dl_client_t2"
-                )
-                st.download_button(
-                    label="Download Engineer Timesheet",
-                    data=eng_df.to_csv(index=False).encode('utf-8'),
-                    file_name=f"Timesheet_Engineer_{wo_num}.csv",
-                    mime="text/csv",
-                    key="dl_eng_t2"
-                )
             except KeyError as e:
                 st.error(f"Missing expected column in timesheet: {str(e)}. Please check the uploaded file format.")
             except ValueError as e:
-                st.error(f"Value error encountered: {str(e)}")
+                st.error(f"Error encountered: {str(e)}")
             except zipfile.BadZipFile:
                 st.error("One of the uploaded files is not a valid Excel file or is corrupted.")
             except Exception as e:
