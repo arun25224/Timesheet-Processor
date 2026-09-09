@@ -44,11 +44,11 @@ def render_expense_ui(tab_key):
             exp['price'] = st.number_input("Price (SGD)", min_value=0.0, value=float(exp.get('price', 0.0)), step=0.01, key=f"price_{tab_key}_{i}")
         with col4:
             st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("❌", key=f"del_{tab_key}_{i}"):
+            if st.button("X", key=f"del_{tab_key}_{i}"):
                 st.session_state[f"expenses_{tab_key}"].pop(i)
                 st.rerun()
                 
-    if st.button("➕ Add Expense", key=f"add_{tab_key}"):
+    if st.button("+ Add Expense", key=f"add_{tab_key}"):
         st.session_state[f"expenses_{tab_key}"].append({'desc': 'Shipyard Pass', 'qty': 0.0, 'price': 0.0})
         st.rerun()
         
@@ -300,7 +300,7 @@ with tab1:
             except KeyError as e:
                 st.error(f"Missing expected column in timesheet: {str(e)}. Please check the uploaded file format.")
             except ValueError as e:
-                st.error(f"Value error encountered: {str(e)}. This might be due to a missing tab in the template.")
+                st.error(f"Value error encountered: {str(e)}")
             except zipfile.BadZipFile:
                 st.error("One of the uploaded files is not a valid Excel file or is corrupted.")
             except Exception as e:
