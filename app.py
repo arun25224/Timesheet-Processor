@@ -17,16 +17,6 @@ def safe_write(ws, row_idx, col_idx, value):
                 ws.cell(row=merged_range.min_row, column=merged_range.min_col).value = value
                 break
 
-def extract_sum(df, possible_cols):
-    """Robustly hunts down columns ignoring case and spaces to ensure sums are found."""
-    df_cols = {str(c).lower().strip(): c for c in df.columns}
-    total = 0.0
-    for col in possible_cols:
-        if col.lower() in df_cols:
-            actual_col = df_cols[col.lower()]
-            total += pd.to_numeric(df[actual_col], errors="coerce").fillna(0).sum()
-    return total
-
 def render_expense_ui(tab_key):
     if f"expenses_{tab_key}" not in st.session_state:
         st.session_state[f"expenses_{tab_key}"] = []
@@ -70,19 +60,36 @@ def process_invoice_logic(
     proj_no, svc_type, vessel_name, vessel_no, engineer_name, 
     include_admin_fee, position, currency, user_expenses
 ):
-    # --- PROCESS TIMESHEETS & AGGRESSIVELY EXTRACT HOURS ---
+    # Clean column names
+    eng_df.columns = eng_df.columns.str.strip()
+    client_df.columns = client_df.columns.str.strip()
+
+    # --- PROCESS ENGINEER TIMESHEET (Work Hours) ---
     if 'Date' in eng_df.columns:
         eng_df = eng_df[eng_df['Date'].astype(str).str.lower() != 'total']
+        
+    travel = pd.to_numeric(eng_df.get("Travel", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
+    travel_ot = pd.to_numeric(eng_df.get("Travel OT", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
+    travel_sum = travel + travel_ot
+    
+    nt_col = next((c for c in ["Normal Time", "NT"] if c in eng_df.columns), None)
+    nt_sum = pd.to_numeric(eng_df[nt_col], errors="coerce").fillna(0).sum() if nt_col else 0.0
+    
+    ot_col = next((c for c in ["OT", "Overtime"] if c in eng_df.columns), None)
+    ot_sum = pd.to_numeric(eng_df[ot_col], errors="coerce").fillna(0).sum() if ot_col else 0.0
+    
+    waiting_base = pd.to_numeric(eng_df.get("Waiting time", eng_df.get("Waiting Time", pd.Series(dtype=float))), errors="coerce").fillna(0).sum()
+    waiting_ot = pd.to_numeric(eng_df.get("Waiting time OT", eng_df.get("Waiting Time OT", pd.Series(dtype=float))), errors="coerce").fillna(0).sum()
+    waiting_sum = waiting_base + waiting_ot
+    
+    prep_col = next((c for c in ["Preparation", "Preparation Time"] if c in eng_df.columns), None)
+    prep_sum = pd.to_numeric(eng_df[prep_col], errors="coerce").fillna(0).sum() if prep_col else 0.0
+    
+    # --- PROCESS CLIENT TIMESHEET (Local Transport) ---
     if 'Date' in client_df.columns:
         client_df = client_df[client_df['Date'].astype(str).str.lower() != 'total']
         
-    travel_sum = extract_sum(eng_df, ["Travel", "Travel Time", "Travel OT", "Travel Time OT"])
-    nt_sum = extract_sum(eng_df, ["Normal Time", "NT", "Normal"])
-    ot_sum = extract_sum(eng_df, ["OT", "Overtime"])
-    waiting_sum = extract_sum(eng_df, ["Waiting time", "Waiting Time", "Waiting time OT", "Waiting Time OT", "Waiting"])
-    prep_sum = extract_sum(eng_df, ["Preparation", "Preparation Time", "Prep"])
-    
-    l_trpt_sum = extract_sum(client_df, ["L.Trpt", "Local Transport", "Transport"])
+    l_trpt_sum = pd.to_numeric(client_df.get("L.Trpt", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
     
     # --- LOAD AND FILL INVOICE TEMPLATE ---
     if template_file.name.lower().endswith('.csv'):
@@ -90,20 +97,34 @@ def process_invoice_logic(
         
     wb = load_workbook(template_file)
     
-    # Determine Target Sheet dynamically based on dropdown
-    sheet_map = {"SG": "SG", "CN": "CN", "KR": "KR", "EUR": "EUR", "USD": "USD"}
-    target_sheet = sheet_map.get(currency, currency)
+    # --- AGGRESSIVE CURRENCY TAB MATCHING ---
+    currency_keywords = {
+        "SG": ["sg", "singapore", "sgd"],
+        "CN": ["cn", "china", "cny", "rmb"],
+        "KR": ["kr", "korea", "krw", "won"],
+        "EUR": ["eur", "europe", "euro"],
+        "USD": ["usd", "us", "america", "dollar"]
+    }
     
-    # Flexible sheet matching if exact match fails
-    if target_sheet not in wb.sheetnames:
-        matched = False
+    target_keywords = currency_keywords.get(currency, [currency.lower()])
+    target_sheet = None
+    
+    # First try exact match
+    for s in wb.sheetnames:
+        if s.strip().upper() == currency.upper():
+            target_sheet = s
+            break
+            
+    # Then try flexible keyword match
+    if not target_sheet:
         for s in wb.sheetnames:
-            if target_sheet.lower() in s.lower() or s.lower() in target_sheet.lower():
+            if any(k in s.lower() for k in target_keywords):
                 target_sheet = s
-                matched = True
                 break
-        if not matched:
-            target_sheet = wb.sheetnames[0]
+                
+    # Fallback to first sheet if absolutely not found
+    if not target_sheet:
+        target_sheet = wb.sheetnames[0]
             
     ws = wb[target_sheet]
     
@@ -118,7 +139,7 @@ def process_invoice_logic(
     safe_write(ws, 14, 3, vessel_name)
     safe_write(ws, 15, 3, vessel_no)
     
-    # --- STRICTLY INJECT HOURS INTO ABSOLUTE ROWS ---
+    # --- INJECT HOURS INTO ABSOLUTE ROWS (D21-D27, D31-D37, D41-D47, D51-D57) ---
     role_base_row_map = {
         "Service Technician": 20,
         "Service Engineer": 30,
@@ -129,12 +150,13 @@ def process_invoice_logic(
     base_row = role_base_row_map.get(position)
     
     if base_row:
-        # Directly force write to Column 4 (D) to guarantee placement
-        if travel_sum > 0: ws.cell(row=base_row + 1, column=4).value = travel_sum
-        if nt_sum > 0: ws.cell(row=base_row + 2, column=4).value = nt_sum
-        if ot_sum > 0: ws.cell(row=base_row + 3, column=4).value = ot_sum
-        if waiting_sum > 0: ws.cell(row=base_row + 4, column=4).value = waiting_sum
-        if prep_sum > 0: ws.cell(row=base_row + 5, column=4).value = prep_sum
+        # Write values directly to Column 4 (D). 
+        # Even if 0, we write it so the user can verify the script targeted the cell properly.
+        safe_write(ws, base_row + 1, 4, travel_sum)
+        safe_write(ws, base_row + 2, 4, nt_sum)
+        safe_write(ws, base_row + 3, 4, ot_sum)
+        safe_write(ws, base_row + 4, 4, waiting_sum)
+        safe_write(ws, base_row + 5, 4, prep_sum)
     
     # --- FIND EXPENSE & LOCAL TRANSPORT SECTION ---
     expense_header_row = None
