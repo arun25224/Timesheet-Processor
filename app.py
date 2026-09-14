@@ -21,20 +21,16 @@ def clean_and_find_headers(df):
     current_cols = df.columns.astype(str).str.lower().str.strip()
     valid_keywords = ['date', 'travel', 'nt', 'normal time', 'ot', 'overtime', 'waiting time']
     
-    # If the current columns already contain the headers, return as is
     if any(k in current_cols for k in valid_keywords):
         df.columns = current_cols
         return df
         
-    # Otherwise, scan the first 10 rows to find the true header row
     for idx, row in df.head(10).iterrows():
         row_str = row.astype(str).str.lower().str.strip().tolist()
         if any(k in row_str for k in valid_keywords):
             df.columns = row_str
-            # Drop the header row and everything above it to clean the dataframe
             return df.iloc[idx+1:].reset_index(drop=True)
             
-    # Fallback if no recognizable header is found
     df.columns = current_cols
     return df
 
@@ -69,7 +65,7 @@ def render_expense_ui(tab_key):
         with col2:
             exp['qty'] = st.number_input("Quantity", min_value=0.0, value=float(exp.get('qty', 0.0)), step=1.0, key=f"qty_{tab_key}_{i}")
         with col3:
-            exp['price'] = st.number_input("Price (SGD)", min_value=0.0, value=float(exp.get('price', 0.0)), step=0.01, key=f"price_{tab_key}_{i}")
+            exp['price'] = st.number_input("Price", min_value=0.0, value=float(exp.get('price', 0.0)), step=0.01, key=f"price_{tab_key}_{i}")
         with col4:
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("X", key=f"del_{tab_key}_{i}"):
@@ -88,7 +84,6 @@ def process_invoice_logic(
     proj_no, svc_type, vessel_name, vessel_no, engineer_name, 
     include_admin_fee, position, currency, user_expenses
 ):
-    # --- PROCESS TIMESHEETS WITH AUTO-HEADER DETECTION ---
     eng_df = clean_and_find_headers(eng_df)
     client_df = clean_and_find_headers(client_df)
 
@@ -105,7 +100,6 @@ def process_invoice_logic(
     
     l_trpt_sum = get_sum(client_df, ["l.trpt", "local transport", "transport"])
     
-    # Store extracted data to show to the user on the website
     extracted_info = {
         "travel": travel_sum,
         "nt": nt_sum,
@@ -115,13 +109,11 @@ def process_invoice_logic(
         "transport": l_trpt_sum
     }
     
-    # --- LOAD AND FILL INVOICE TEMPLATE ---
     if template_file.name.lower().endswith('.csv'):
         raise ValueError("The Invoice Template must be an Excel file (.xlsx).")
         
     wb = load_workbook(template_file)
     
-    # --- AGGRESSIVE CURRENCY TAB MATCHING ---
     currency_keywords = {
         "SG": ["sg", "singapore", "sgd"],
         "CN": ["cn", "china", "cny", "rmb"],
@@ -147,7 +139,6 @@ def process_invoice_logic(
             
     ws = wb[target_sheet]
     
-    # Inject Customer Information
     safe_write(ws, 7, 3, cust_name)
     safe_write(ws, 8, 3, inv_address)
     safe_write(ws, 9, 3, del_address)
@@ -158,7 +149,6 @@ def process_invoice_logic(
     safe_write(ws, 14, 3, vessel_name)
     safe_write(ws, 15, 3, vessel_no)
     
-    # --- INJECT HOURS INTO ABSOLUTE ROWS ---
     role_base_row_map = {
         "Service Technician": 20,
         "Service Engineer": 30,
@@ -169,56 +159,47 @@ def process_invoice_logic(
     base_row = role_base_row_map.get(position)
     
     if base_row:
-        # Write values directly to Column 4 (D) to guarantee they appear.
-        ws.cell(row=base_row + 1, column=4).value = travel_sum
-        ws.cell(row=base_row + 2, column=4).value = nt_sum
-        ws.cell(row=base_row + 3, column=4).value = ot_sum
-        ws.cell(row=base_row + 4, column=4).value = waiting_sum
-        ws.cell(row=base_row + 5, column=4).value = prep_sum
+        safe_write(ws, base_row + 1, 4, travel_sum)
+        safe_write(ws, base_row + 2, 4, nt_sum)
+        safe_write(ws, base_row + 3, 4, ot_sum)
+        safe_write(ws, base_row + 4, 4, waiting_sum)
+        safe_write(ws, base_row + 5, 4, prep_sum)
     
-    # --- FIND EXPENSE & LOCAL TRANSPORT SECTION ---
-    expense_header_row = None
-    for r in range(50, 80):
-        val = str(ws.cell(row=r, column=2).value).strip().lower()
-        if "expenses" in val:
-            expense_header_row = r
-            break
-            
-    if expense_header_row:
-        safe_write(ws, expense_header_row + 2, 3, engineer_name)
-        
-        if l_trpt_sum > 0:
-            for r in range(expense_header_row, expense_header_row + 20):
-                c3_val = str(ws.cell(row=r, column=3).value).lower()
-                if "local transport" in c3_val:
-                    ws.cell(row=r, column=4).value = l_trpt_sum
+    if engineer_name:
+        for r in range(50, 70):
+            val = str(ws.cell(row=r, column=2).value)
+            if "Allowance" in val and "[Engineer 1]" in val:
+                safe_write(ws, r, 2, val.replace("[Engineer 1]", f"[{engineer_name}]"))
+                break
+
+    if l_trpt_sum > 0:
+        for r in range(50, 80):
+            c3_val = str(ws.cell(row=r, column=3).value).strip().lower()
+            if c3_val == "local transport":
+                safe_write(ws, r, 4, l_trpt_sum)
+                break
+
+    if user_expenses:
+        for exp in user_expenses:
+            for r in range(50, 80):
+                c3_val = str(ws.cell(row=r, column=3).value).strip().lower()
+                if exp['desc'].lower() == c3_val:
+                    if exp['qty'] > 0:
+                        safe_write(ws, r, 4, exp['qty'])
+                    if exp['price'] > 0:
+                        safe_write(ws, r, 6, exp['price'])
                     break
 
-        # Strictly match user expenses with Column C
-        if user_expenses:
-            for exp in user_expenses:
-                for r in range(expense_header_row + 1, expense_header_row + 25):
-                    c3_val = str(ws.cell(row=r, column=3).value).strip().lower()
-                    if exp['desc'].lower() == c3_val:
-                        if exp['qty'] > 0:
-                            ws.cell(row=r, column=4).value = exp['qty']
-                        if exp['price'] > 0:
-                            ws.cell(row=r, column=6).value = exp['price']
-                        break
-
-    # --- ADMIN FEE TOGGLE LOGIC ---
     if include_admin_fee == "No":
         for r in range(80, 100):
             val = str(ws.cell(row=r, column=2).value).strip().lower()
             if "admin" in val and "fee" in val:
-                # Clear all formulas/values across the entire row to ensure it doesn't calculate
                 for c in range(3, 10):
-                    ws.cell(row=r, column=c).value = None
-                # Explicitly force the Amount column (Column G / 7) to 0
-                ws.cell(row=r, column=7).value = 0
+                    if ws.cell(row=r, column=c).value is not None:
+                        safe_write(ws, r, c, None)
+                safe_write(ws, r, 7, 0)
                 break
 
-    # Export Final Invoice
     invoice_output = io.BytesIO()
     wb.save(invoice_output)
     invoice_output.seek(0)
