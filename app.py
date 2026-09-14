@@ -206,6 +206,18 @@ def process_invoice_logic(
                             ws.cell(row=r, column=6).value = exp['price']
                         break
 
+    # --- ADMIN FEE TOGGLE LOGIC ---
+    if include_admin_fee == "No":
+        for r in range(80, 100):
+            val = str(ws.cell(row=r, column=2).value).strip().lower()
+            if "admin" in val and "fee" in val:
+                # Clear all formulas/values across the entire row to ensure it doesn't calculate
+                for c in range(3, 10):
+                    ws.cell(row=r, column=c).value = None
+                # Explicitly force the Amount column (Column G / 7) to 0
+                ws.cell(row=r, column=7).value = 0
+                break
+
     # Export Final Invoice
     invoice_output = io.BytesIO()
     wb.save(invoice_output)
