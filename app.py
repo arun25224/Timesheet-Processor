@@ -165,12 +165,9 @@ def process_invoice_logic(
         safe_write(ws, base_row + 4, 4, waiting_sum)
         safe_write(ws, base_row + 5, 4, prep_sum)
     
+    # Inject Engineer Name strictly into C61
     if engineer_name:
-        for r in range(50, 70):
-            val = str(ws.cell(row=r, column=2).value)
-            if "Allowance" in val and "[Engineer 1]" in val:
-                safe_write(ws, r, 2, val.replace("[Engineer 1]", f"[{engineer_name}]"))
-                break
+        safe_write(ws, 61, 3, engineer_name)
 
     if l_trpt_sum > 0:
         for r in range(50, 80):
