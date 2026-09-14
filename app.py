@@ -125,38 +125,23 @@ def process_invoice_logic(
     safe_write(ws, 14, 3, vessel_name)
     safe_write(ws, 15, 3, vessel_no)
     
-    # --- DYNAMICALLY INJECT HOURS INTO THE CORRECT POSITION SECTION ---
-    target_pos = position.lower().strip()
-    pos_start_row = None
-    hours_col = 4 # Default fallback
+    # --- INJECT HOURS INTO ABSOLUTE ROWS (D21-D27, D31-D37, D41-D47, D51-D57) ---
+    role_base_row_map = {
+        "Service Technician": 20,
+        "Service Engineer": 30,
+        "Senior Service Engineer": 40,
+        "Specialist Service Engineer": 50
+    }
     
-    # Strictly locate the header row for the selected position in Column B (2)
-    for r in range(15, 60):
-        cell_val = str(ws.cell(row=r, column=2).value).lower().strip()
-        if cell_val == target_pos:
-            pos_start_row = r
-            # Dynamically locate the "Hours/#days" column in the header row just below
-            for c in range(1, 10):
-                if "hours" in str(ws.cell(row=r+1, column=c).value).lower():
-                    hours_col = c
-                    break
-            break
-            
-    # Inject hours by mapping the 'Type' column strictly into the found hours column
-    if pos_start_row:
-        for r in range(pos_start_row + 1, pos_start_row + 10):
-            type_val = str(ws.cell(row=r, column=3).value).strip()
-            
-            if type_val == "Travel Time" and travel_sum > 0: 
-                ws.cell(row=r, column=hours_col).value = travel_sum
-            elif type_val == "Normal Time" and nt_sum > 0: 
-                ws.cell(row=r, column=hours_col).value = nt_sum
-            elif type_val == "Overtime" and ot_sum > 0: 
-                ws.cell(row=r, column=hours_col).value = ot_sum
-            elif type_val == "Waiting Time" and waiting_sum > 0: 
-                ws.cell(row=r, column=hours_col).value = waiting_sum
-            elif type_val == "Preparation Time" and prep_sum > 0: 
-                ws.cell(row=r, column=hours_col).value = prep_sum
+    base_row = role_base_row_map.get(position)
+    
+    if base_row:
+        # Column 4 corresponds strictly to Column D (Hours/#days)
+        if travel_sum > 0: safe_write(ws, base_row + 1, 4, travel_sum)
+        if nt_sum > 0: safe_write(ws, base_row + 2, 4, nt_sum)
+        if ot_sum > 0: safe_write(ws, base_row + 3, 4, ot_sum)
+        if waiting_sum > 0: safe_write(ws, base_row + 4, 4, waiting_sum)
+        if prep_sum > 0: safe_write(ws, base_row + 5, 4, prep_sum)
     
     # --- FIND EXPENSE & LOCAL TRANSPORT SECTION ---
     expense_header_row = None
