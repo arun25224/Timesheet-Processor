@@ -60,37 +60,31 @@ def process_invoice_logic(
     proj_no, svc_type, vessel_name, vessel_no, engineer_name, 
     include_admin_fee, position, currency, user_expenses
 ):
-    # Clean column names
+    # Clean column names to remove accidental trailing spaces
     eng_df.columns = eng_df.columns.str.strip()
     client_df.columns = client_df.columns.str.strip()
 
     # --- PROCESS ENGINEER TIMESHEET (Work Hours) ---
     if 'Date' in eng_df.columns:
-        eng_df = eng_df[eng_df['Date'].astype(str).str.lower() != 'total']
+        eng_df = eng_df[eng_df['Date'].astype(str) != 'Total']
         
-    travel = pd.to_numeric(eng_df.get("Travel", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
-    travel_ot = pd.to_numeric(eng_df.get("Travel OT", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
+    travel = pd.to_numeric(eng_df["Travel"], errors="coerce").fillna(0).sum() if "Travel" in eng_df.columns else 0.0
+    travel_ot = pd.to_numeric(eng_df["Travel OT"], errors="coerce").fillna(0).sum() if "Travel OT" in eng_df.columns else 0.0
     travel_sum = travel + travel_ot
     
-    nt_col = next((c for c in ["Normal Time", "NT"] if c in eng_df.columns), None)
-    nt_sum = pd.to_numeric(eng_df[nt_col], errors="coerce").fillna(0).sum() if nt_col else 0.0
+    nt_col = "Normal Time" if "Normal Time" in eng_df.columns else ("NT" if "NT" in eng_df.columns else None)
+    nt_sum = pd.to_numeric(eng_df[nt_col], errors="coerce").fillna(0).sum() if nt_col and nt_col in eng_df.columns else 0.0
+    ot_sum = pd.to_numeric(eng_df["OT"], errors="coerce").fillna(0).sum() if "OT" in eng_df.columns else 0.0
     
-    ot_col = next((c for c in ["OT", "Overtime"] if c in eng_df.columns), None)
-    ot_sum = pd.to_numeric(eng_df[ot_col], errors="coerce").fillna(0).sum() if ot_col else 0.0
-    
-    waiting_base = pd.to_numeric(eng_df.get("Waiting time", eng_df.get("Waiting Time", pd.Series(dtype=float))), errors="coerce").fillna(0).sum()
-    waiting_ot = pd.to_numeric(eng_df.get("Waiting time OT", eng_df.get("Waiting Time OT", pd.Series(dtype=float))), errors="coerce").fillna(0).sum()
-    waiting_sum = waiting_base + waiting_ot
-    
-    prep_col = next((c for c in ["Preparation", "Preparation Time"] if c in eng_df.columns), None)
-    prep_sum = pd.to_numeric(eng_df[prep_col], errors="coerce").fillna(0).sum() if prep_col else 0.0
+    waiting_sum = pd.to_numeric(eng_df["Waiting time"], errors="coerce").fillna(0).sum() if "Waiting time" in eng_df.columns else 0.0
+    prep_sum = pd.to_numeric(eng_df["Preparation"], errors="coerce").fillna(0).sum() if "Preparation" in eng_df.columns else 0.0
     
     # --- PROCESS CLIENT TIMESHEET (Local Transport) ---
     if 'Date' in client_df.columns:
-        client_df = client_df[client_df['Date'].astype(str).str.lower() != 'total']
+        client_df = client_df[client_df['Date'].astype(str) != 'Total']
         
-    l_trpt_sum = pd.to_numeric(client_df.get("L.Trpt", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
-    
+    l_trpt_sum = pd.to_numeric(client_df["L.Trpt"], errors="coerce").fillna(0).sum() if "L.Trpt" in client_df.columns else 0.0
+
     # --- LOAD AND FILL INVOICE TEMPLATE ---
     if template_file.name.lower().endswith('.csv'):
         raise ValueError("The Invoice Template must be an Excel file (.xlsx).")
@@ -151,12 +145,11 @@ def process_invoice_logic(
     
     if base_row:
         # Write values directly to Column 4 (D). 
-        # Even if 0, we write it so the user can verify the script targeted the cell properly.
-        safe_write(ws, base_row + 1, 4, travel_sum)
-        safe_write(ws, base_row + 2, 4, nt_sum)
-        safe_write(ws, base_row + 3, 4, ot_sum)
-        safe_write(ws, base_row + 4, 4, waiting_sum)
-        safe_write(ws, base_row + 5, 4, prep_sum)
+        if travel_sum > 0: safe_write(ws, base_row + 1, 4, travel_sum)
+        if nt_sum > 0: safe_write(ws, base_row + 2, 4, nt_sum)
+        if ot_sum > 0: safe_write(ws, base_row + 3, 4, ot_sum)
+        if waiting_sum > 0: safe_write(ws, base_row + 4, 4, waiting_sum)
+        if prep_sum > 0: safe_write(ws, base_row + 5, 4, prep_sum)
     
     # --- FIND EXPENSE & LOCAL TRANSPORT SECTION ---
     expense_header_row = None
@@ -283,8 +276,9 @@ with tab1:
                 eng_sheet = next((s for s in sheet_names if 'engineer' in s.lower()), sheet_names[1] if len(sheet_names) > 1 else sheet_names[0])
                 client_sheet = next((s for s in sheet_names if 'client' in s.lower()), sheet_names[0])
                 
-                eng_df = pd.read_excel(timesheet_excel_t1, sheet_name=eng_sheet)
-                client_df = pd.read_excel(timesheet_excel_t1, sheet_name=client_sheet)
+                # Restored skiprows=2 which is required for Tab 1 Excel structures
+                eng_df = pd.read_excel(timesheet_excel_t1, sheet_name=eng_sheet, skiprows=2)
+                client_df = pd.read_excel(timesheet_excel_t1, sheet_name=client_sheet, skiprows=2)
                 
                 output = process_invoice_logic(
                     eng_df, client_df, template_excel_t1, 
@@ -350,12 +344,14 @@ with tab2:
         else:
             try:
                 if client_timesheet_t2.name.lower().endswith('.csv'):
-                    df_t2 = pd.read_csv(client_timesheet_t2)
+                    client_df = pd.read_csv(client_timesheet_t2)
                 else:
-                    df_t2 = pd.read_excel(client_timesheet_t2, sheet_name=0)
+                    client_df = pd.read_excel(client_timesheet_t2, sheet_name=0)
+                
+                eng_df = client_df.copy()
                 
                 output = process_invoice_logic(
-                    df_t2, df_t2, template_excel_t2, 
+                    eng_df, client_df, template_excel_t2, 
                     cust_name_t2, inv_address_t2, del_address_t2, reference_t2, cust_po_t2, 
                     proj_no_t2, svc_type_t2, vessel_name_t2, vessel_no_t2, engineer_name_invoice_t2, 
                     include_admin_fee_t2, position_t2, currency_t2, user_expenses_t2
