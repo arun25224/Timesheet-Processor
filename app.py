@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import io
-import zipfile
 from openpyxl import load_workbook
 
 # ============================================================
@@ -16,6 +15,35 @@ def safe_write(ws, row_idx, col_idx, value):
             if coord in merged_range:
                 ws.cell(row=merged_range.min_row, column=merged_range.min_col).value = value
                 break
+
+def clean_and_find_headers(df):
+    """Automatically hunts down the actual header row in any uploaded timesheet."""
+    current_cols = df.columns.astype(str).str.lower().str.strip()
+    valid_keywords = ['date', 'travel', 'nt', 'normal time', 'ot', 'overtime', 'waiting time']
+    
+    # If the current columns already contain the headers, return as is
+    if any(k in current_cols for k in valid_keywords):
+        df.columns = current_cols
+        return df
+        
+    # Otherwise, scan the first 10 rows to find the true header row
+    for idx, row in df.head(10).iterrows():
+        row_str = row.astype(str).str.lower().str.strip().tolist()
+        if any(k in row_str for k in valid_keywords):
+            df.columns = row_str
+            # Drop the header row and everything above it to clean the dataframe
+            return df.iloc[idx+1:].reset_index(drop=True)
+            
+    # Fallback if no recognizable header is found
+    df.columns = current_cols
+    return df
+
+def get_sum(df, possible_cols):
+    """Safely extracts sums from columns regardless of slight naming variations."""
+    for c in possible_cols:
+        if c in df.columns:
+            return pd.to_numeric(df[c], errors='coerce').fillna(0).sum()
+    return 0.0
 
 def render_expense_ui(tab_key):
     if f"expenses_{tab_key}" not in st.session_state:
@@ -60,31 +88,33 @@ def process_invoice_logic(
     proj_no, svc_type, vessel_name, vessel_no, engineer_name, 
     include_admin_fee, position, currency, user_expenses
 ):
-    # Clean column names to remove accidental trailing spaces
-    eng_df.columns = eng_df.columns.str.strip()
-    client_df.columns = client_df.columns.str.strip()
+    # --- PROCESS TIMESHEETS WITH AUTO-HEADER DETECTION ---
+    eng_df = clean_and_find_headers(eng_df)
+    client_df = clean_and_find_headers(client_df)
 
-    # --- PROCESS ENGINEER TIMESHEET (Work Hours) ---
-    if 'Date' in eng_df.columns:
-        eng_df = eng_df[eng_df['Date'].astype(str) != 'Total']
+    if 'date' in eng_df.columns:
+        eng_df = eng_df[eng_df['date'].astype(str).str.lower() != 'total']
+    if 'date' in client_df.columns:
+        client_df = client_df[client_df['date'].astype(str).str.lower() != 'total']
         
-    travel = pd.to_numeric(eng_df["Travel"], errors="coerce").fillna(0).sum() if "Travel" in eng_df.columns else 0.0
-    travel_ot = pd.to_numeric(eng_df["Travel OT"], errors="coerce").fillna(0).sum() if "Travel OT" in eng_df.columns else 0.0
-    travel_sum = travel + travel_ot
+    travel_sum = get_sum(eng_df, ["travel", "travel time"]) + get_sum(eng_df, ["travel ot", "travel time ot"])
+    nt_sum = get_sum(eng_df, ["nt", "normal time", "normal"])
+    ot_sum = get_sum(eng_df, ["ot", "overtime"])
+    waiting_sum = get_sum(eng_df, ["waiting time", "waiting"]) + get_sum(eng_df, ["waiting time ot", "waiting ot"])
+    prep_sum = get_sum(eng_df, ["preparation", "preparation time", "prep"])
     
-    nt_col = "Normal Time" if "Normal Time" in eng_df.columns else ("NT" if "NT" in eng_df.columns else None)
-    nt_sum = pd.to_numeric(eng_df[nt_col], errors="coerce").fillna(0).sum() if nt_col and nt_col in eng_df.columns else 0.0
-    ot_sum = pd.to_numeric(eng_df["OT"], errors="coerce").fillna(0).sum() if "OT" in eng_df.columns else 0.0
+    l_trpt_sum = get_sum(client_df, ["l.trpt", "local transport", "transport"])
     
-    waiting_sum = pd.to_numeric(eng_df["Waiting time"], errors="coerce").fillna(0).sum() if "Waiting time" in eng_df.columns else 0.0
-    prep_sum = pd.to_numeric(eng_df["Preparation"], errors="coerce").fillna(0).sum() if "Preparation" in eng_df.columns else 0.0
+    # Store extracted data to show to the user on the website
+    extracted_info = {
+        "travel": travel_sum,
+        "nt": nt_sum,
+        "ot": ot_sum,
+        "waiting": waiting_sum,
+        "prep": prep_sum,
+        "transport": l_trpt_sum
+    }
     
-    # --- PROCESS CLIENT TIMESHEET (Local Transport) ---
-    if 'Date' in client_df.columns:
-        client_df = client_df[client_df['Date'].astype(str) != 'Total']
-        
-    l_trpt_sum = pd.to_numeric(client_df["L.Trpt"], errors="coerce").fillna(0).sum() if "L.Trpt" in client_df.columns else 0.0
-
     # --- LOAD AND FILL INVOICE TEMPLATE ---
     if template_file.name.lower().endswith('.csv'):
         raise ValueError("The Invoice Template must be an Excel file (.xlsx).")
@@ -100,23 +130,18 @@ def process_invoice_logic(
         "USD": ["usd", "us", "america", "dollar"]
     }
     
-    target_keywords = currency_keywords.get(currency, [currency.lower()])
     target_sheet = None
-    
-    # First try exact match
     for s in wb.sheetnames:
         if s.strip().upper() == currency.upper():
             target_sheet = s
             break
             
-    # Then try flexible keyword match
     if not target_sheet:
         for s in wb.sheetnames:
-            if any(k in s.lower() for k in target_keywords):
+            if any(k in s.lower() for k in currency_keywords.get(currency, [])):
                 target_sheet = s
                 break
                 
-    # Fallback to first sheet if absolutely not found
     if not target_sheet:
         target_sheet = wb.sheetnames[0]
             
@@ -133,7 +158,7 @@ def process_invoice_logic(
     safe_write(ws, 14, 3, vessel_name)
     safe_write(ws, 15, 3, vessel_no)
     
-    # --- INJECT HOURS INTO ABSOLUTE ROWS (D21-D27, D31-D37, D41-D47, D51-D57) ---
+    # --- INJECT HOURS INTO ABSOLUTE ROWS ---
     role_base_row_map = {
         "Service Technician": 20,
         "Service Engineer": 30,
@@ -144,12 +169,12 @@ def process_invoice_logic(
     base_row = role_base_row_map.get(position)
     
     if base_row:
-        # Write values directly to Column 4 (D). 
-        if travel_sum > 0: safe_write(ws, base_row + 1, 4, travel_sum)
-        if nt_sum > 0: safe_write(ws, base_row + 2, 4, nt_sum)
-        if ot_sum > 0: safe_write(ws, base_row + 3, 4, ot_sum)
-        if waiting_sum > 0: safe_write(ws, base_row + 4, 4, waiting_sum)
-        if prep_sum > 0: safe_write(ws, base_row + 5, 4, prep_sum)
+        # Write values directly to Column 4 (D) to guarantee they appear.
+        ws.cell(row=base_row + 1, column=4).value = travel_sum
+        ws.cell(row=base_row + 2, column=4).value = nt_sum
+        ws.cell(row=base_row + 3, column=4).value = ot_sum
+        ws.cell(row=base_row + 4, column=4).value = waiting_sum
+        ws.cell(row=base_row + 5, column=4).value = prep_sum
     
     # --- FIND EXPENSE & LOCAL TRANSPORT SECTION ---
     expense_header_row = None
@@ -162,15 +187,13 @@ def process_invoice_logic(
     if expense_header_row:
         safe_write(ws, expense_header_row + 2, 3, engineer_name)
         
-        # Find Local Transport and inject calculated units
         if l_trpt_sum > 0:
             for r in range(expense_header_row, expense_header_row + 20):
                 c3_val = str(ws.cell(row=r, column=3).value).lower()
                 if "local transport" in c3_val:
-                    safe_write(ws, r, 4, l_trpt_sum)
+                    ws.cell(row=r, column=4).value = l_trpt_sum
                     break
 
-        # Inject User Custom Expenses dynamically
         if user_expenses:
             expense_queue = user_expenses.copy()
             
@@ -180,23 +203,20 @@ def process_invoice_logic(
                 c3_val = str(ws.cell(row=r, column=3).value).strip()
                 c2_val = str(ws.cell(row=r, column=2).value).strip()
                 
-                # Try to match exact description in Column C
                 matched_exp = next((exp for exp in expense_queue if exp['desc'].lower() == c3_val.lower()), None)
                 if matched_exp:
-                    if matched_exp['qty'] > 0: safe_write(ws, r, 4, matched_exp['qty'])
-                    if matched_exp['price'] > 0: safe_write(ws, r, 6, matched_exp['price'])
+                    if matched_exp['qty'] > 0: ws.cell(row=r, column=4).value = matched_exp['qty']
+                    if matched_exp['price'] > 0: ws.cell(row=r, column=6).value = matched_exp['price']
                     expense_queue.remove(matched_exp)
                     continue
                     
-                # Try to match exact description in Column B
                 matched_exp_b = next((exp for exp in expense_queue if exp['desc'].lower() == c2_val.lower()), None)
                 if matched_exp_b:
-                    if matched_exp_b['qty'] > 0: safe_write(ws, r, 4, matched_exp_b['qty'])
-                    if matched_exp_b['price'] > 0: safe_write(ws, r, 6, matched_exp_b['price'])
+                    if matched_exp_b['qty'] > 0: ws.cell(row=r, column=4).value = matched_exp_b['qty']
+                    if matched_exp_b['price'] > 0: ws.cell(row=r, column=6).value = matched_exp_b['price']
                     expense_queue.remove(matched_exp_b)
                     continue
 
-                # Overwrite placeholder rows
                 if "ADD DESCRIPTION" in c2_val or "ADD DESCRIPTION" in c3_val or "ADD RELEVANT EXPENSES" in c2_val or "ADD RELEVANT EXPENSES" in c3_val:
                     exp_to_inject = expense_queue.pop(0)
                     
@@ -205,15 +225,15 @@ def process_invoice_logic(
                     else:
                         safe_write(ws, r, 3, exp_to_inject['desc'])
                         
-                    if exp_to_inject['qty'] > 0: safe_write(ws, r, 4, exp_to_inject['qty'])
-                    if exp_to_inject['price'] > 0: safe_write(ws, r, 6, exp_to_inject['price'])
+                    if exp_to_inject['qty'] > 0: ws.cell(row=r, column=4).value = exp_to_inject['qty']
+                    if exp_to_inject['price'] > 0: ws.cell(row=r, column=6).value = exp_to_inject['price']
 
     # Export Final Invoice
     invoice_output = io.BytesIO()
     wb.save(invoice_output)
     invoice_output.seek(0)
     
-    return invoice_output
+    return {"file": invoice_output, "info": extracted_info}
 
 # ============================================================
 # STREAMLIT UI
@@ -276,9 +296,8 @@ with tab1:
                 eng_sheet = next((s for s in sheet_names if 'engineer' in s.lower()), sheet_names[1] if len(sheet_names) > 1 else sheet_names[0])
                 client_sheet = next((s for s in sheet_names if 'client' in s.lower()), sheet_names[0])
                 
-                # Restored skiprows=2 which is required for Tab 1 Excel structures
-                eng_df = pd.read_excel(timesheet_excel_t1, sheet_name=eng_sheet, skiprows=2)
-                client_df = pd.read_excel(timesheet_excel_t1, sheet_name=client_sheet, skiprows=2)
+                eng_df = pd.read_excel(timesheet_excel_t1, sheet_name=eng_sheet)
+                client_df = pd.read_excel(timesheet_excel_t1, sheet_name=client_sheet)
                 
                 output = process_invoice_logic(
                     eng_df, client_df, template_excel_t1, 
@@ -287,10 +306,19 @@ with tab1:
                     include_admin_fee_t1, position_t1, currency_t1, user_expenses_t1
                 )
                 
-                st.success("Invoice Generated Successfully")
+                info = output["info"]
+                st.info(f"📊 **Data Successfully Extracted:**\n"
+                        f"- **Travel Time:** {info['travel']} hours\n"
+                        f"- **Normal Time:** {info['nt']} hours\n"
+                        f"- **Overtime:** {info['ot']} hours\n"
+                        f"- **Waiting Time:** {info['waiting']} hours\n"
+                        f"- **Preparation Time:** {info['prep']} hours\n"
+                        f"- **Local Transport:** {info['transport']} units")
+                
+                st.success("Invoice Generated Successfully!")
                 st.download_button(
                     label="Download Final Invoice",
-                    data=output,
+                    data=output["file"],
                     file_name=f"Invoice_{cust_name_t1 or 'Completed'}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_t1"
@@ -344,23 +372,30 @@ with tab2:
         else:
             try:
                 if client_timesheet_t2.name.lower().endswith('.csv'):
-                    client_df = pd.read_csv(client_timesheet_t2)
+                    df_t2 = pd.read_csv(client_timesheet_t2)
                 else:
-                    client_df = pd.read_excel(client_timesheet_t2, sheet_name=0)
-                
-                eng_df = client_df.copy()
+                    df_t2 = pd.read_excel(client_timesheet_t2, sheet_name=0)
                 
                 output = process_invoice_logic(
-                    eng_df, client_df, template_excel_t2, 
+                    df_t2, df_t2, template_excel_t2, 
                     cust_name_t2, inv_address_t2, del_address_t2, reference_t2, cust_po_t2, 
                     proj_no_t2, svc_type_t2, vessel_name_t2, vessel_no_t2, engineer_name_invoice_t2, 
                     include_admin_fee_t2, position_t2, currency_t2, user_expenses_t2
                 )
                 
-                st.success("Invoice Generated Successfully")
+                info = output["info"]
+                st.info(f"📊 **Data Successfully Extracted:**\n"
+                        f"- **Travel Time:** {info['travel']} hours\n"
+                        f"- **Normal Time:** {info['nt']} hours\n"
+                        f"- **Overtime:** {info['ot']} hours\n"
+                        f"- **Waiting Time:** {info['waiting']} hours\n"
+                        f"- **Preparation Time:** {info['prep']} hours\n"
+                        f"- **Local Transport:** {info['transport']} units")
+                
+                st.success("Invoice Generated Successfully!")
                 st.download_button(
                     label="Download Final Invoice",
-                    data=output,
+                    data=output["file"],
                     file_name=f"Invoice_{cust_name_t2 or 'Completed'}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_t2"
