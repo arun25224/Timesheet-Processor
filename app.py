@@ -194,39 +194,17 @@ def process_invoice_logic(
                     ws.cell(row=r, column=4).value = l_trpt_sum
                     break
 
+        # Strictly match user expenses with Column C
         if user_expenses:
-            expense_queue = user_expenses.copy()
-            
-            for r in range(expense_header_row + 1, expense_header_row + 25):
-                if not expense_queue: break
-                
-                c3_val = str(ws.cell(row=r, column=3).value).strip()
-                c2_val = str(ws.cell(row=r, column=2).value).strip()
-                
-                matched_exp = next((exp for exp in expense_queue if exp['desc'].lower() == c3_val.lower()), None)
-                if matched_exp:
-                    if matched_exp['qty'] > 0: ws.cell(row=r, column=4).value = matched_exp['qty']
-                    if matched_exp['price'] > 0: ws.cell(row=r, column=6).value = matched_exp['price']
-                    expense_queue.remove(matched_exp)
-                    continue
-                    
-                matched_exp_b = next((exp for exp in expense_queue if exp['desc'].lower() == c2_val.lower()), None)
-                if matched_exp_b:
-                    if matched_exp_b['qty'] > 0: ws.cell(row=r, column=4).value = matched_exp_b['qty']
-                    if matched_exp_b['price'] > 0: ws.cell(row=r, column=6).value = matched_exp_b['price']
-                    expense_queue.remove(matched_exp_b)
-                    continue
-
-                if "ADD DESCRIPTION" in c2_val or "ADD DESCRIPTION" in c3_val or "ADD RELEVANT EXPENSES" in c2_val or "ADD RELEVANT EXPENSES" in c3_val:
-                    exp_to_inject = expense_queue.pop(0)
-                    
-                    if "ADD DESCRIPTION" in c2_val or "ADD RELEVANT" in c2_val:
-                        safe_write(ws, r, 2, exp_to_inject['desc'])
-                    else:
-                        safe_write(ws, r, 3, exp_to_inject['desc'])
-                        
-                    if exp_to_inject['qty'] > 0: ws.cell(row=r, column=4).value = exp_to_inject['qty']
-                    if exp_to_inject['price'] > 0: ws.cell(row=r, column=6).value = exp_to_inject['price']
+            for exp in user_expenses:
+                for r in range(expense_header_row + 1, expense_header_row + 25):
+                    c3_val = str(ws.cell(row=r, column=3).value).strip().lower()
+                    if exp['desc'].lower() == c3_val:
+                        if exp['qty'] > 0:
+                            ws.cell(row=r, column=4).value = exp['qty']
+                        if exp['price'] > 0:
+                            ws.cell(row=r, column=6).value = exp['price']
+                        break
 
     # Export Final Invoice
     invoice_output = io.BytesIO()
