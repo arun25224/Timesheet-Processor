@@ -6,21 +6,35 @@ from openpyxl import load_workbook
 # ============================================================
 # UTILITY FUNCTIONS
 # ============================================================
+def safe_write(ws, row_idx, col_idx, value):
+    try:
+        ws.cell(row=row_idx, column=col_idx).value = value
+    except AttributeError:
+        coord = ws.cell(row=row_idx, column=col_idx).coordinate
+        for merged_range in ws.merged_cells.ranges:
+            if coord in merged_range:
+                ws.cell(row=merged_range.min_row, column=merged_range.min_col).value = value
+                break
+
 def clean_and_find_headers(df):
     """Automatically hunts down the actual header row in any uploaded timesheet."""
     current_cols = df.columns.astype(str).str.lower().str.strip()
     valid_keywords = ['date', 'travel', 'nt', 'normal time', 'ot', 'overtime', 'waiting time']
     
+    # If the current columns already contain the headers, return as is
     if any(k in current_cols for k in valid_keywords):
         df.columns = current_cols
         return df
         
+    # Otherwise, scan the first 10 rows to find the true header row
     for idx, row in df.head(10).iterrows():
         row_str = row.astype(str).str.lower().str.strip().tolist()
         if any(k in row_str for k in valid_keywords):
             df.columns = row_str
+            # Drop the header row and everything above it to clean the dataframe
             return df.iloc[idx+1:].reset_index(drop=True)
             
+    # Fallback if no recognizable header is found
     df.columns = current_cols
     return df
 
@@ -37,7 +51,6 @@ def render_expense_ui(tab_key):
         
     st.markdown("### 4. Additional Expenses (Optional)")
     
-    # Matches the exact list in the provided screenshot
     expense_options = [
         "Shipyard Pass", "Taxi Overseas", "Ferry Fare", "Visa", "Hotel", 
         "Laundry", "Agent Fee", "Excess Baggage Fee", "Airport Tax", 
@@ -56,7 +69,7 @@ def render_expense_ui(tab_key):
         with col2:
             exp['qty'] = st.number_input("Quantity", min_value=0.0, value=float(exp.get('qty', 0.0)), step=1.0, key=f"qty_{tab_key}_{i}")
         with col3:
-            exp['price'] = st.number_input("Price", min_value=0.0, value=float(exp.get('price', 0.0)), step=0.01, key=f"price_{tab_key}_{i}")
+            exp['price'] = st.number_input("Price (SGD)", min_value=0.0, value=float(exp.get('price', 0.0)), step=0.01, key=f"price_{tab_key}_{i}")
         with col4:
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("X", key=f"del_{tab_key}_{i}"):
@@ -92,6 +105,7 @@ def process_invoice_logic(
     
     l_trpt_sum = get_sum(client_df, ["l.trpt", "local transport", "transport"])
     
+    # Store extracted data to show to the user on the website
     extracted_info = {
         "travel": travel_sum,
         "nt": nt_sum,
@@ -134,15 +148,15 @@ def process_invoice_logic(
     ws = wb[target_sheet]
     
     # Inject Customer Information
-    ws.cell(row=7, column=3).value = cust_name
-    ws.cell(row=8, column=3).value = inv_address
-    ws.cell(row=9, column=3).value = del_address
-    ws.cell(row=10, column=3).value = reference
-    ws.cell(row=11, column=3).value = cust_po
-    ws.cell(row=12, column=3).value = proj_no
-    ws.cell(row=13, column=3).value = svc_type
-    ws.cell(row=14, column=3).value = vessel_name
-    ws.cell(row=15, column=3).value = vessel_no
+    safe_write(ws, 7, 3, cust_name)
+    safe_write(ws, 8, 3, inv_address)
+    safe_write(ws, 9, 3, del_address)
+    safe_write(ws, 10, 3, reference)
+    safe_write(ws, 11, 3, cust_po)
+    safe_write(ws, 12, 3, proj_no)
+    safe_write(ws, 13, 3, svc_type)
+    safe_write(ws, 14, 3, vessel_name)
+    safe_write(ws, 15, 3, vessel_no)
     
     # --- INJECT HOURS INTO ABSOLUTE ROWS ---
     role_base_row_map = {
@@ -155,52 +169,64 @@ def process_invoice_logic(
     base_row = role_base_row_map.get(position)
     
     if base_row:
+        # Write values directly to Column 4 (D) to guarantee they appear.
         ws.cell(row=base_row + 1, column=4).value = travel_sum
         ws.cell(row=base_row + 2, column=4).value = nt_sum
         ws.cell(row=base_row + 3, column=4).value = ot_sum
         ws.cell(row=base_row + 4, column=4).value = waiting_sum
         ws.cell(row=base_row + 5, column=4).value = prep_sum
     
-    # --- FIND AND INJECT EXPENSES ---
-    # Update Engineer Name in the Allowance row
-    if engineer_name:
-        for r in range(50, 70):
-            val = str(ws.cell(row=r, column=2).value)
-            if "Allowance" in val and "[Engineer 1]" in val:
-                ws.cell(row=r, column=2).value = val.replace("[Engineer 1]", f"[{engineer_name}]")
-                break
-
-    # Local Transport calculated from Client Timesheet
-    if l_trpt_sum > 0:
-        for r in range(50, 80):
-            c3_val = str(ws.cell(row=r, column=3).value).strip().lower()
-            if c3_val == "local transport":
-                ws.cell(row=r, column=4).value = l_trpt_sum
-                break
-
-    # Custom Expenses from Streamlit Input
-    if user_expenses:
-        for exp in user_expenses:
-            for r in range(50, 80):
-                c3_val = str(ws.cell(row=r, column=3).value).strip().lower()
-                if exp['desc'].lower() == c3_val:
-                    if exp['qty'] > 0:
-                        ws.cell(row=r, column=4).value = exp['qty']
-                    if exp['price'] > 0:
-                        ws.cell(row=r, column=6).value = exp['price']
+    # --- FIND EXPENSE & LOCAL TRANSPORT SECTION ---
+    expense_header_row = None
+    for r in range(50, 80):
+        val = str(ws.cell(row=r, column=2).value).strip().lower()
+        if "expenses" in val:
+            expense_header_row = r
+            break
+            
+    if expense_header_row:
+        safe_write(ws, expense_header_row + 2, 3, engineer_name)
+        
+        if l_trpt_sum > 0:
+            for r in range(expense_header_row, expense_header_row + 20):
+                c3_val = str(ws.cell(row=r, column=3).value).lower()
+                if "local transport" in c3_val:
+                    ws.cell(row=r, column=4).value = l_trpt_sum
                     break
 
-    # --- ADMIN FEE TOGGLE LOGIC ---
-    if include_admin_fee == "No":
-        for r in range(80, 100):
-            val = str(ws.cell(row=r, column=2).value).strip().lower()
-            if "admin" in val and "fee" in val:
-                # Target the formula in this row and wipe it to 0
-                for c in range(3, 10):
-                    if ws.cell(row=r, column=c).value is not None:
-                        ws.cell(row=r, column=c).value = 0
-                        break
-                break
+        if user_expenses:
+            expense_queue = user_expenses.copy()
+            
+            for r in range(expense_header_row + 1, expense_header_row + 25):
+                if not expense_queue: break
+                
+                c3_val = str(ws.cell(row=r, column=3).value).strip()
+                c2_val = str(ws.cell(row=r, column=2).value).strip()
+                
+                matched_exp = next((exp for exp in expense_queue if exp['desc'].lower() == c3_val.lower()), None)
+                if matched_exp:
+                    if matched_exp['qty'] > 0: ws.cell(row=r, column=4).value = matched_exp['qty']
+                    if matched_exp['price'] > 0: ws.cell(row=r, column=6).value = matched_exp['price']
+                    expense_queue.remove(matched_exp)
+                    continue
+                    
+                matched_exp_b = next((exp for exp in expense_queue if exp['desc'].lower() == c2_val.lower()), None)
+                if matched_exp_b:
+                    if matched_exp_b['qty'] > 0: ws.cell(row=r, column=4).value = matched_exp_b['qty']
+                    if matched_exp_b['price'] > 0: ws.cell(row=r, column=6).value = matched_exp_b['price']
+                    expense_queue.remove(matched_exp_b)
+                    continue
+
+                if "ADD DESCRIPTION" in c2_val or "ADD DESCRIPTION" in c3_val or "ADD RELEVANT EXPENSES" in c2_val or "ADD RELEVANT EXPENSES" in c3_val:
+                    exp_to_inject = expense_queue.pop(0)
+                    
+                    if "ADD DESCRIPTION" in c2_val or "ADD RELEVANT" in c2_val:
+                        safe_write(ws, r, 2, exp_to_inject['desc'])
+                    else:
+                        safe_write(ws, r, 3, exp_to_inject['desc'])
+                        
+                    if exp_to_inject['qty'] > 0: ws.cell(row=r, column=4).value = exp_to_inject['qty']
+                    if exp_to_inject['price'] > 0: ws.cell(row=r, column=6).value = exp_to_inject['price']
 
     # Export Final Invoice
     invoice_output = io.BytesIO()
@@ -314,7 +340,7 @@ with tab2:
     st.markdown("### 2. Enter Information")
     c1_t2, c2_t2 = st.columns(2)
     with c1_t2:
-        work_order_t2 = text_input("Work Order Number", value="NeedsConfirmation", key="wo_t2")
+        work_order_t2 = st.text_input("Work Order Number", value="NeedsConfirmation", key="wo_t2")
         cust_name_t2 = st.text_input("Customer name", key="cust_name_t2")
         inv_address_t2 = st.text_input("Invoicing address", key="inv_addr_t2")
         del_address_t2 = st.text_input("Delivery address", key="del_addr_t2")
