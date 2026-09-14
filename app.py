@@ -211,7 +211,7 @@ st.set_page_config(page_title="Invoice Generator", layout="wide")
 st.title("Final Invoice Generation")
 st.write("Select your timesheet format and generate the final invoice template.")
 
-tab1, tab2 = st.tabs(["Single Timesheet Upload (Combined Excel)", "Standalone Timesheet Upload (.csv or .xlsx)"])
+tab1, tab2 = st.tabs(["Single Timesheet Upload (Combined Excel)", "SANA Timesheet Upload"])
 
 # ------------------------------------------------------------
 # TAB 1: SINGLE TIMESHEET UPLOAD
@@ -275,7 +275,7 @@ with tab1:
                 )
                 
                 info = output["info"]
-                st.info(f"📊 **Data Successfully Extracted:**\n"
+                st.info(f" **Data Successfully Extracted:**\n"
                         f"- **Travel Time:** {info['travel']} hours\n"
                         f"- **Normal Time:** {info['nt']} hours\n"
                         f"- **Overtime:** {info['ot']} hours\n"
@@ -352,7 +352,7 @@ with tab2:
                 )
                 
                 info = output["info"]
-                st.info(f"📊 **Data Successfully Extracted:**\n"
+                st.info(f" **Data Successfully Extracted:**\n"
                         f"- **Travel Time:** {info['travel']} hours\n"
                         f"- **Normal Time:** {info['nt']} hours\n"
                         f"- **Overtime:** {info['ot']} hours\n"
