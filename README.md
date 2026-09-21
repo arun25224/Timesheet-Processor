@@ -46,7 +46,3 @@ The `app.py` script dynamically locates injection zones based on specific text s
 * **Role Routing:** `Service Technician`, `Service Engineer`, `Senior Service Engineer`, `Specialist Service Engineer`. (Altering these will break the vertical hour placement logic).
 * **Section Locators:** `Expenses` and `Local transport`.
 * **Expense Targets:** `[ADD RELEVANT EXPENSES HERE]` and `[ADD DESCRIPTION HERE]`. 
-
-### Author
-
-# Arun Thiru
