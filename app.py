@@ -250,7 +250,7 @@ with tab1:
     st.markdown("### 3. Service & Role Details")
     c3_t1, c4_t1, c5_t1 = st.columns(3)
     with c3_t1:
-        currency_t1 = st.selectbox("Select Currency:", ["SG", "CN", "KR", "EUR", "USD"], key="curr_t1")
+        currency_t1 = st.selectbox("Select Country:", ["SG", "CN", "KR", "EUR", "USD"], key="curr_t1")
     with c4_t1:
         include_admin_fee_t1 = st.radio("Include 10% Admin Fee?", ["Yes", "No"], key="admin_fee_t1")
     with c5_t1:
