@@ -50,7 +50,7 @@ def render_expense_ui(tab_key):
     expense_options = [
         "Shipyard Pass", "Taxi Overseas", "Ferry Fare", "Visa", "Hotel", 
         "Laundry", "Agent Fee", "Excess Baggage Fee", "Airport Tax", 
-        "Flight Ticket", "Misc", "Local transport"
+        "Flight Ticket", "Misc", "Local transport", "Allowance"
     ]
     
     for i, exp in enumerate(st.session_state[f"expenses_{tab_key}"]):
@@ -178,6 +178,13 @@ def process_invoice_logic(
 
     if user_expenses:
         for exp in user_expenses:
+            if exp['desc'] == "Allowance":
+                if exp['qty'] > 0:
+                    safe_write(ws, 61, 4, exp['qty'])  # Quantity into D61
+                if exp['price'] > 0:
+                    safe_write(ws, 61, 6, exp['price'])  # Price into F61
+                continue
+                
             for r in range(50, 80):
                 c3_val = str(ws.cell(row=r, column=3).value).strip().lower()
                 if exp['desc'].lower() == c3_val:
@@ -275,7 +282,7 @@ with tab1:
                 )
                 
                 info = output["info"]
-                st.info(f" **Data Successfully Extracted:**\n"
+                st.info(f"📊 **Data Successfully Extracted:**\n"
                         f"- **Travel Time:** {info['travel']} hours\n"
                         f"- **Normal Time:** {info['nt']} hours\n"
                         f"- **Overtime:** {info['ot']} hours\n"
@@ -352,7 +359,7 @@ with tab2:
                 )
                 
                 info = output["info"]
-                st.info(f" **Data Successfully Extracted:**\n"
+                st.info(f"📊 **Data Successfully Extracted:**\n"
                         f"- **Travel Time:** {info['travel']} hours\n"
                         f"- **Normal Time:** {info['nt']} hours\n"
                         f"- **Overtime:** {info['ot']} hours\n"
