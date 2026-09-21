@@ -282,7 +282,7 @@ with tab1:
                 )
                 
                 info = output["info"]
-                st.info(f"📊 **Data Successfully Extracted:**\n"
+                st.info(f" **Data Successfully Extracted:**\n"
                         f"- **Travel Time:** {info['travel']} hours\n"
                         f"- **Normal Time:** {info['nt']} hours\n"
                         f"- **Overtime:** {info['ot']} hours\n"
@@ -359,7 +359,7 @@ with tab2:
                 )
                 
                 info = output["info"]
-                st.info(f"📊 **Data Successfully Extracted:**\n"
+                st.info(f" **Data Successfully Extracted:**\n"
                         f"- **Travel Time:** {info['travel']} hours\n"
                         f"- **Normal Time:** {info['nt']} hours\n"
                         f"- **Overtime:** {info['ot']} hours\n"
