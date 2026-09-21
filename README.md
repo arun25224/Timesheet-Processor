@@ -49,4 +49,4 @@ The `app.py` script dynamically locates injection zones based on specific text s
 
 ### Author
 
-Arun Thiru
+# Arun Thiru
