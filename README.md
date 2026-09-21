@@ -47,6 +47,6 @@ The `app.py` script dynamically locates injection zones based on specific text s
 * **Section Locators:** `Expenses` and `Local transport`.
 * **Expense Targets:** `[ADD RELEVANT EXPENSES HERE]` and `[ADD DESCRIPTION HERE]`. 
 
-##Author
+### Author
 
 Arun Thiru
