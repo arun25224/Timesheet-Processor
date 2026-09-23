@@ -45,7 +45,7 @@ def extract_metadata(df):
     """Scans the raw dataframe to extract metadata for auto-filling the Streamlit UI."""
     metadata = {
         "wo": "", "cust_name": "", "proj_no": "", "po": "", 
-        "svc": "", "vessel": "", "vessel_no": "", "eng_name": ""
+        "svc": "", "vessel": "", "vessel_no": "", "eng_name": "", "place": ""
     }
     for index, row in df.iterrows():
         row_str = row.astype(str).str.lower().str.strip().tolist()
@@ -97,6 +97,12 @@ def extract_metadata(df):
             if idx + 1 < len(row):
                 val = str(row.iloc[idx+1]).strip()
                 if val.lower() != 'nan' and val != '': metadata['eng_name'] = val
+                
+        if 'place of attendance' in row_str:
+            idx = row_str.index('place of attendance')
+            if idx + 1 < len(row):
+                val = str(row.iloc[idx+1]).strip()
+                if val.lower() != 'nan' and val != '': metadata['place'] = val
                 
     return metadata
 
@@ -224,6 +230,7 @@ def process_invoice_logic(
         safe_write(ws, base_row + 4, 4, waiting_sum)
         safe_write(ws, base_row + 5, 4, prep_sum)
     
+    # Inject Engineer Name strictly into C61
     if engineer_name:
         safe_write(ws, 61, 3, engineer_name)
 
@@ -307,6 +314,7 @@ with tab1:
                 st.session_state.vessel_t1 = meta_t1.get("vessel", "")
                 st.session_state.vessel_no_t1 = meta_t1.get("vessel_no", "")
                 st.session_state.eng_name_t1 = meta_t1.get("eng_name", "")
+                st.session_state.del_addr_t1 = meta_t1.get("place", "")
                 
                 st.success("Information extracted successfully!")
             except Exception as e:
@@ -413,6 +421,7 @@ with tab2:
                 st.session_state.vessel_t2 = meta_t2.get("vessel", "")
                 st.session_state.vessel_no_t2 = meta_t2.get("vessel_no", "")
                 st.session_state.eng_name_t2 = meta_t2.get("eng_name", "")
+                st.session_state.del_addr_t2 = meta_t2.get("place", "")
                 
                 st.success("Information extracted successfully!")
             except Exception as e:
