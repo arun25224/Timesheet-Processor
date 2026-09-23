@@ -41,6 +41,62 @@ def get_sum(df, possible_cols):
             return pd.to_numeric(df[c], errors='coerce').fillna(0).sum()
     return 0.0
 
+def extract_metadata(df):
+    """Scans the raw dataframe to extract metadata for auto-filling the Streamlit UI."""
+    metadata = {}
+    for index, row in df.iterrows():
+        row_str = row.astype(str).str.lower().str.strip().tolist()
+        
+        if 'work order number' in row_str:
+            idx = row_str.index('work order number')
+            if idx + 1 < len(row):
+                val = str(row.iloc[idx+1]).strip()
+                if val.lower() != 'nan' and val != '': metadata['wo'] = val
+                
+        if 'customer name' in row_str:
+            idx = row_str.index('customer name')
+            if idx + 1 < len(row):
+                val = str(row.iloc[idx+1]).strip()
+                if val.lower() != 'nan' and val != '': metadata['cust_name'] = val
+                
+        if 'project number' in row_str:
+            idx = row_str.index('project number')
+            if idx + 1 < len(row):
+                val = str(row.iloc[idx+1]).strip()
+                if val.lower() != 'nan' and val != '': metadata['proj_no'] = val
+                
+        if 'customer po number' in row_str:
+            idx = row_str.index('customer po number')
+            if idx + 1 < len(row):
+                val = str(row.iloc[idx+1]).strip()
+                if val.lower() != 'nan' and val != '': metadata['po'] = val
+                
+        if 'service type' in row_str:
+            idx = row_str.index('service type')
+            if idx + 1 < len(row):
+                val = str(row.iloc[idx+1]).strip()
+                if val.lower() != 'nan' and val != '': metadata['svc'] = val
+                
+        if 'vessel name' in row_str:
+            idx = row_str.index('vessel name')
+            if idx + 1 < len(row):
+                val = str(row.iloc[idx+1]).strip()
+                if val.lower() != 'nan' and val != '': metadata['vessel'] = val
+                
+        if 'imo or vessel number' in row_str:
+            idx = row_str.index('imo or vessel number')
+            if idx + 1 < len(row):
+                val = str(row.iloc[idx+1]).strip()
+                if val.lower() != 'nan' and val != '': metadata['vessel_no'] = val
+                
+        if 'engineer name shown in activity table' in row_str:
+            idx = row_str.index('engineer name shown in activity table')
+            if idx + 1 < len(row):
+                val = str(row.iloc[idx+1]).strip()
+                if val.lower() != 'nan' and val != '': metadata['eng_name'] = val
+                
+    return metadata
+
 def render_expense_ui(tab_key):
     if f"expenses_{tab_key}" not in st.session_state:
         st.session_state[f"expenses_{tab_key}"] = []
@@ -231,26 +287,38 @@ with tab1:
     with col2:
         template_excel_t1 = st.file_uploader("Upload Blank Invoice Template", type=["xlsx"], key="inv_upload_t1")
         
+    # Auto-extract metadata if timesheet is uploaded
+    meta_t1 = {"wo": "NeedsConfirmation", "cust_name": "", "proj_no": "", "po": "", "svc": "", "vessel": "", "vessel_no": "", "eng_name": ""}
+    if timesheet_excel_t1:
+        try:
+            xls_temp = pd.ExcelFile(timesheet_excel_t1)
+            sheet_names_temp = xls_temp.sheet_names
+            client_sheet_temp = next((s for s in sheet_names_temp if 'client' in s.lower()), sheet_names_temp[0])
+            df_temp = pd.read_excel(timesheet_excel_t1, sheet_name=client_sheet_temp)
+            meta_t1.update(extract_metadata(df_temp))
+        except Exception:
+            pass
+
     st.markdown("### 2. Enter Information")
     c1_t1, c2_t1 = st.columns(2)
     with c1_t1:
-        work_order_t1 = st.text_input("Work Order Number", value="NeedsConfirmation", key="wo_t1")
-        cust_name_t1 = st.text_input("Customer name", key="cust_name_t1")
+        work_order_t1 = st.text_input("Work Order Number", value=meta_t1["wo"], key="wo_t1")
+        cust_name_t1 = st.text_input("Customer name", value=meta_t1["cust_name"], key="cust_name_t1")
         inv_address_t1 = st.text_input("Invoicing address", key="inv_addr_t1")
         del_address_t1 = st.text_input("Delivery address", key="del_addr_t1")
         reference_t1 = st.text_input("Reference", key="ref_t1")
     with c2_t1:
-        cust_po_t1 = st.text_input("Customer PO", key="po_t1")
-        proj_no_t1 = st.text_input("Project No", key="proj_t1")
-        svc_type_t1 = st.text_input("Service Type", key="svc_t1")
-        vessel_name_t1 = st.text_input("Vessel Name", key="vessel_t1")
-        vessel_no_t1 = st.text_input("Vessel No (if applicable)", key="vessel_no_t1")
-        engineer_name_invoice_t1 = st.text_input("Engineer Name (For Expenses)", key="eng_name_t1")
+        cust_po_t1 = st.text_input("Customer PO", value=meta_t1["po"], key="po_t1")
+        proj_no_t1 = st.text_input("Project No", value=meta_t1["proj_no"], key="proj_t1")
+        svc_type_t1 = st.text_input("Service Type", value=meta_t1["svc"], key="svc_t1")
+        vessel_name_t1 = st.text_input("Vessel Name", value=meta_t1["vessel"], key="vessel_t1")
+        vessel_no_t1 = st.text_input("Vessel No (if applicable)", value=meta_t1["vessel_no"], key="vessel_no_t1")
+        engineer_name_invoice_t1 = st.text_input("Engineer Name (For Expenses)", value=meta_t1["eng_name"], key="eng_name_t1")
 
     st.markdown("### 3. Service & Role Details")
     c3_t1, c4_t1, c5_t1 = st.columns(3)
     with c3_t1:
-        currency_t1 = st.selectbox("Select Country:", ["SG", "CN", "KR", "EUR", "USD"], key="curr_t1")
+        currency_t1 = st.selectbox("Select Currency:", ["SG", "CN", "KR", "EUR", "USD"], key="curr_t1")
     with c4_t1:
         include_admin_fee_t1 = st.radio("Include 10% Admin Fee?", ["Yes", "No"], key="admin_fee_t1")
     with c5_t1:
@@ -282,7 +350,7 @@ with tab1:
                 )
                 
                 info = output["info"]
-                st.info(f" **Data Successfully Extracted:**\n"
+                st.info(f"📊 **Data Successfully Extracted:**\n"
                         f"- **Travel Time:** {info['travel']} hours\n"
                         f"- **Normal Time:** {info['nt']} hours\n"
                         f"- **Overtime:** {info['ot']} hours\n"
@@ -312,21 +380,33 @@ with tab2:
     with col2_t2:
         template_excel_t2 = st.file_uploader("Upload Blank Invoice Template", type=["xlsx", "csv"], key="inv_upload_t2")
         
+    # Auto-extract metadata if timesheet is uploaded
+    meta_t2 = {"wo": "NeedsConfirmation", "cust_name": "", "proj_no": "", "po": "", "svc": "", "vessel": "", "vessel_no": "", "eng_name": ""}
+    if client_timesheet_t2:
+        try:
+            if client_timesheet_t2.name.lower().endswith('.csv'):
+                df_temp2 = pd.read_csv(client_timesheet_t2)
+            else:
+                df_temp2 = pd.read_excel(client_timesheet_t2, sheet_name=0)
+            meta_t2.update(extract_metadata(df_temp2))
+        except Exception:
+            pass
+
     st.markdown("### 2. Enter Information")
     c1_t2, c2_t2 = st.columns(2)
     with c1_t2:
-        work_order_t2 = st.text_input("Work Order Number", value="NeedsConfirmation", key="wo_t2")
-        cust_name_t2 = st.text_input("Customer name", key="cust_name_t2")
+        work_order_t2 = st.text_input("Work Order Number", value=meta_t2["wo"], key="wo_t2")
+        cust_name_t2 = st.text_input("Customer name", value=meta_t2["cust_name"], key="cust_name_t2")
         inv_address_t2 = st.text_input("Invoicing address", key="inv_addr_t2")
         del_address_t2 = st.text_input("Delivery address", key="del_addr_t2")
         reference_t2 = st.text_input("Reference", key="ref_t2")
     with c2_t2:
-        cust_po_t2 = st.text_input("Customer PO", key="po_t2")
-        proj_no_t2 = st.text_input("Project No", key="proj_t2")
-        svc_type_t2 = st.text_input("Service Type", key="svc_t2")
-        vessel_name_t2 = st.text_input("Vessel Name", key="vessel_t2")
-        vessel_no_t2 = st.text_input("Vessel No (if applicable)", key="vessel_no_t2")
-        engineer_name_invoice_t2 = st.text_input("Engineer Name (For Expenses)", key="eng_name_t2")
+        cust_po_t2 = st.text_input("Customer PO", value=meta_t2["po"], key="po_t2")
+        proj_no_t2 = st.text_input("Project No", value=meta_t2["proj_no"], key="proj_t2")
+        svc_type_t2 = st.text_input("Service Type", value=meta_t2["svc"], key="svc_t2")
+        vessel_name_t2 = st.text_input("Vessel Name", value=meta_t2["vessel"], key="vessel_t2")
+        vessel_no_t2 = st.text_input("Vessel No (if applicable)", value=meta_t2["vessel_no"], key="vessel_no_t2")
+        engineer_name_invoice_t2 = st.text_input("Engineer Name (For Expenses)", value=meta_t2["eng_name"], key="eng_name_t2")
 
     st.markdown("### 3. Service & Role Details")
     c3_t2, c4_t2, c5_t2 = st.columns(3)
@@ -359,7 +439,7 @@ with tab2:
                 )
                 
                 info = output["info"]
-                st.info(f" **Data Successfully Extracted:**\n"
+                st.info(f"📊 **Data Successfully Extracted:**\n"
                         f"- **Travel Time:** {info['travel']} hours\n"
                         f"- **Normal Time:** {info['nt']} hours\n"
                         f"- **Overtime:** {info['ot']} hours\n"
