@@ -8,12 +8,12 @@ from openpyxl import load_workbook
 # ============================================================
 def safe_write(ws, row_idx, col_idx, value):
     try:
-        ws.cell(row=row_idx, column=col_idx).value = value
+        ws.cell(row=row_idx, column=col_idx).value = value if value != "" else None
     except AttributeError:
         coord = ws.cell(row=row_idx, column=col_idx).coordinate
         for merged_range in ws.merged_cells.ranges:
             if coord in merged_range:
-                ws.cell(row=merged_range.min_row, column=merged_range.min_col).value = value
+                ws.cell(row=merged_range.min_row, column=merged_range.min_col).value = value if value != "" else None
                 break
 
 def clean_and_find_headers(df):
@@ -43,7 +43,10 @@ def get_sum(df, possible_cols):
 
 def extract_metadata(df):
     """Scans the raw dataframe to extract metadata for auto-filling the Streamlit UI."""
-    metadata = {}
+    metadata = {
+        "wo": "", "cust_name": "", "proj_no": "", "po": "", 
+        "svc": "", "vessel": "", "vessel_no": "", "eng_name": ""
+    }
     for index, row in df.iterrows():
         row_str = row.astype(str).str.lower().str.strip().tolist()
         
@@ -221,7 +224,6 @@ def process_invoice_logic(
         safe_write(ws, base_row + 4, 4, waiting_sum)
         safe_write(ws, base_row + 5, 4, prep_sum)
     
-    # Inject Engineer Name strictly into C61
     if engineer_name:
         safe_write(ws, 61, 3, engineer_name)
 
@@ -236,9 +238,9 @@ def process_invoice_logic(
         for exp in user_expenses:
             if exp['desc'] == "Allowance":
                 if exp['qty'] > 0:
-                    safe_write(ws, 61, 4, exp['qty'])  # Quantity into D61
+                    safe_write(ws, 61, 4, exp['qty'])
                 if exp['price'] > 0:
-                    safe_write(ws, 61, 6, exp['price'])  # Price into F61
+                    safe_write(ws, 61, 6, exp['price'])
                 continue
                 
             for r in range(50, 80):
@@ -287,33 +289,46 @@ with tab1:
     with col2:
         template_excel_t1 = st.file_uploader("Upload Blank Invoice Template", type=["xlsx"], key="inv_upload_t1")
         
-    # Auto-extract metadata if timesheet is uploaded
-    meta_t1 = {"wo": "NeedsConfirmation", "cust_name": "", "proj_no": "", "po": "", "svc": "", "vessel": "", "vessel_no": "", "eng_name": ""}
-    if timesheet_excel_t1:
-        try:
-            xls_temp = pd.ExcelFile(timesheet_excel_t1)
-            sheet_names_temp = xls_temp.sheet_names
-            client_sheet_temp = next((s for s in sheet_names_temp if 'client' in s.lower()), sheet_names_temp[0])
-            df_temp = pd.read_excel(timesheet_excel_t1, sheet_name=client_sheet_temp)
-            meta_t1.update(extract_metadata(df_temp))
-        except Exception:
-            pass
+    if st.button("Extract Information", key="extract_t1"):
+        if timesheet_excel_t1:
+            try:
+                xls_temp = pd.ExcelFile(timesheet_excel_t1)
+                sheet_names_temp = xls_temp.sheet_names
+                client_sheet_temp = next((s for s in sheet_names_temp if 'client' in s.lower()), sheet_names_temp[0])
+                df_temp = pd.read_excel(timesheet_excel_t1, sheet_name=client_sheet_temp)
+                
+                meta_t1 = extract_metadata(df_temp)
+                
+                st.session_state.wo_t1 = meta_t1.get("wo", "")
+                st.session_state.cust_name_t1 = meta_t1.get("cust_name", "")
+                st.session_state.po_t1 = meta_t1.get("po", "")
+                st.session_state.proj_t1 = meta_t1.get("proj_no", "")
+                st.session_state.svc_t1 = meta_t1.get("svc", "")
+                st.session_state.vessel_t1 = meta_t1.get("vessel", "")
+                st.session_state.vessel_no_t1 = meta_t1.get("vessel_no", "")
+                st.session_state.eng_name_t1 = meta_t1.get("eng_name", "")
+                
+                st.success("Information extracted successfully!")
+            except Exception as e:
+                st.error(f"Failed to extract information: {str(e)}")
+        else:
+            st.warning("Please upload a timesheet first.")
 
     st.markdown("### 2. Enter Information")
     c1_t1, c2_t1 = st.columns(2)
     with c1_t1:
-        work_order_t1 = st.text_input("Work Order Number", value=meta_t1["wo"], key="wo_t1")
-        cust_name_t1 = st.text_input("Customer name", value=meta_t1["cust_name"], key="cust_name_t1")
+        work_order_t1 = st.text_input("Work Order Number", key="wo_t1")
+        cust_name_t1 = st.text_input("Customer name", key="cust_name_t1")
         inv_address_t1 = st.text_input("Invoicing address", key="inv_addr_t1")
         del_address_t1 = st.text_input("Delivery address", key="del_addr_t1")
         reference_t1 = st.text_input("Reference", key="ref_t1")
     with c2_t1:
-        cust_po_t1 = st.text_input("Customer PO", value=meta_t1["po"], key="po_t1")
-        proj_no_t1 = st.text_input("Project No", value=meta_t1["proj_no"], key="proj_t1")
-        svc_type_t1 = st.text_input("Service Type", value=meta_t1["svc"], key="svc_t1")
-        vessel_name_t1 = st.text_input("Vessel Name", value=meta_t1["vessel"], key="vessel_t1")
-        vessel_no_t1 = st.text_input("Vessel No (if applicable)", value=meta_t1["vessel_no"], key="vessel_no_t1")
-        engineer_name_invoice_t1 = st.text_input("Engineer Name (For Expenses)", value=meta_t1["eng_name"], key="eng_name_t1")
+        cust_po_t1 = st.text_input("Customer PO", key="po_t1")
+        proj_no_t1 = st.text_input("Project No", key="proj_t1")
+        svc_type_t1 = st.text_input("Service Type", key="svc_t1")
+        vessel_name_t1 = st.text_input("Vessel Name", key="vessel_t1")
+        vessel_no_t1 = st.text_input("Vessel No (if applicable)", key="vessel_no_t1")
+        engineer_name_invoice_t1 = st.text_input("Engineer Name (For Expenses)", key="eng_name_t1")
 
     st.markdown("### 3. Service & Role Details")
     c3_t1, c4_t1, c5_t1 = st.columns(3)
@@ -380,33 +395,46 @@ with tab2:
     with col2_t2:
         template_excel_t2 = st.file_uploader("Upload Blank Invoice Template", type=["xlsx", "csv"], key="inv_upload_t2")
         
-    # Auto-extract metadata if timesheet is uploaded
-    meta_t2 = {"wo": "NeedsConfirmation", "cust_name": "", "proj_no": "", "po": "", "svc": "", "vessel": "", "vessel_no": "", "eng_name": ""}
-    if client_timesheet_t2:
-        try:
-            if client_timesheet_t2.name.lower().endswith('.csv'):
-                df_temp2 = pd.read_csv(client_timesheet_t2)
-            else:
-                df_temp2 = pd.read_excel(client_timesheet_t2, sheet_name=0)
-            meta_t2.update(extract_metadata(df_temp2))
-        except Exception:
-            pass
+    if st.button("Extract Information", key="extract_t2"):
+        if client_timesheet_t2:
+            try:
+                if client_timesheet_t2.name.lower().endswith('.csv'):
+                    df_temp2 = pd.read_csv(client_timesheet_t2)
+                else:
+                    df_temp2 = pd.read_excel(client_timesheet_t2, sheet_name=0)
+                
+                meta_t2 = extract_metadata(df_temp2)
+                
+                st.session_state.wo_t2 = meta_t2.get("wo", "")
+                st.session_state.cust_name_t2 = meta_t2.get("cust_name", "")
+                st.session_state.po_t2 = meta_t2.get("po", "")
+                st.session_state.proj_t2 = meta_t2.get("proj_no", "")
+                st.session_state.svc_t2 = meta_t2.get("svc", "")
+                st.session_state.vessel_t2 = meta_t2.get("vessel", "")
+                st.session_state.vessel_no_t2 = meta_t2.get("vessel_no", "")
+                st.session_state.eng_name_t2 = meta_t2.get("eng_name", "")
+                
+                st.success("Information extracted successfully!")
+            except Exception as e:
+                st.error(f"Failed to extract information: {str(e)}")
+        else:
+            st.warning("Please upload a timesheet first.")
 
     st.markdown("### 2. Enter Information")
     c1_t2, c2_t2 = st.columns(2)
     with c1_t2:
-        work_order_t2 = st.text_input("Work Order Number", value=meta_t2["wo"], key="wo_t2")
-        cust_name_t2 = st.text_input("Customer name", value=meta_t2["cust_name"], key="cust_name_t2")
+        work_order_t2 = st.text_input("Work Order Number", key="wo_t2")
+        cust_name_t2 = st.text_input("Customer name", key="cust_name_t2")
         inv_address_t2 = st.text_input("Invoicing address", key="inv_addr_t2")
         del_address_t2 = st.text_input("Delivery address", key="del_addr_t2")
         reference_t2 = st.text_input("Reference", key="ref_t2")
     with c2_t2:
-        cust_po_t2 = st.text_input("Customer PO", value=meta_t2["po"], key="po_t2")
-        proj_no_t2 = st.text_input("Project No", value=meta_t2["proj_no"], key="proj_t2")
-        svc_type_t2 = st.text_input("Service Type", value=meta_t2["svc"], key="svc_t2")
-        vessel_name_t2 = st.text_input("Vessel Name", value=meta_t2["vessel"], key="vessel_t2")
-        vessel_no_t2 = st.text_input("Vessel No (if applicable)", value=meta_t2["vessel_no"], key="vessel_no_t2")
-        engineer_name_invoice_t2 = st.text_input("Engineer Name (For Expenses)", value=meta_t2["eng_name"], key="eng_name_t2")
+        cust_po_t2 = st.text_input("Customer PO", key="po_t2")
+        proj_no_t2 = st.text_input("Project No", key="proj_t2")
+        svc_type_t2 = st.text_input("Service Type", key="svc_t2")
+        vessel_name_t2 = st.text_input("Vessel Name", key="vessel_t2")
+        vessel_no_t2 = st.text_input("Vessel No (if applicable)", key="vessel_no_t2")
+        engineer_name_invoice_t2 = st.text_input("Engineer Name (For Expenses)", key="eng_name_t2")
 
     st.markdown("### 3. Service & Role Details")
     c3_t2, c4_t2, c5_t2 = st.columns(3)
