@@ -316,7 +316,7 @@ with tab1:
                 st.session_state.eng_name_t1 = meta_t1.get("eng_name", "")
                 st.session_state.del_addr_t1 = meta_t1.get("place", "")
                 
-                st.success("Information extracted successfully!")
+                st.success("Information extracted.")
             except Exception as e:
                 st.error(f"Failed to extract information: {str(e)}")
         else:
@@ -373,7 +373,7 @@ with tab1:
                 )
                 
                 info = output["info"]
-                st.info(f"📊 **Data Successfully Extracted:**\n"
+                st.info(f" **Data Extracted:**\n"
                         f"- **Travel Time:** {info['travel']} hours\n"
                         f"- **Normal Time:** {info['nt']} hours\n"
                         f"- **Overtime:** {info['ot']} hours\n"
@@ -381,7 +381,7 @@ with tab1:
                         f"- **Preparation Time:** {info['prep']} hours\n"
                         f"- **Local Transport:** {info['transport']} units")
                 
-                st.success("Invoice Generated Successfully!")
+                st.success("Invoice Generated.")
                 st.download_button(
                     label="Download Final Invoice",
                     data=output["file"],
@@ -423,7 +423,7 @@ with tab2:
                 st.session_state.eng_name_t2 = meta_t2.get("eng_name", "")
                 st.session_state.del_addr_t2 = meta_t2.get("place", "")
                 
-                st.success("Information extracted successfully!")
+                st.success("Information extracted.")
             except Exception as e:
                 st.error(f"Failed to extract information: {str(e)}")
         else:
@@ -476,7 +476,7 @@ with tab2:
                 )
                 
                 info = output["info"]
-                st.info(f"📊 **Data Successfully Extracted:**\n"
+                st.info(f" **Data Extracted:**\n"
                         f"- **Travel Time:** {info['travel']} hours\n"
                         f"- **Normal Time:** {info['nt']} hours\n"
                         f"- **Overtime:** {info['ot']} hours\n"
@@ -484,7 +484,7 @@ with tab2:
                         f"- **Preparation Time:** {info['prep']} hours\n"
                         f"- **Local Transport:** {info['transport']} units")
                 
-                st.success("Invoice Generated Successfully!")
+                st.success("Invoice Generated.")
                 st.download_button(
                     label="Download Final Invoice",
                     data=output["file"],
