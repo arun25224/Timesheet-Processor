@@ -32,7 +32,7 @@ Once the data is extracted, the Python web application (`app.py`) takes over. It
 
 * `app.py`: The primary application script containing the Streamlit frontend UI, session state management, data aggregation algorithms, and the Pandas/Openpyxl injection logic.
 * `requirements.txt`: The dependency mapping file required for environment replication.
-* `Invoice Template.xlsx`: The master corporate spreadsheet containing necessary text anchors, multi-currency tabs, and billing formulas (To be provided securely by the user on the local machine).
+* `sana_prompt`: The prompt that was added to the internal company platform for the reading and extraction of the timesheet.
 
 ## System Maintenance & Protocols
 
