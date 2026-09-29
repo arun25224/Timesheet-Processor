@@ -24,7 +24,7 @@ Once the data is extracted, the Python web application (`app.py`) takes over. It
 
 ## Core Capabilities
 
-* **Template-Driven Excel Injection:** Utilizes `openpyxl` to map data strictly to where it belongs. It uses anchor-text scanning to dynamically inject custom expenses, ensuring the code doesn't break even if the template length varies.
+* **Template-Driven Excel Injection:** Utilises `openpyxl` to map data strictly to where it belongs. It uses anchor-text scanning to dynamically inject custom expenses, ensuring the code doesn't break even if the template length varies.
 * **Formula Preservation:** One of the biggest challenges with automated Excel generation is protecting existing logic. This system injects raw numeric values while strictly preserving downstream taxation and summation arrays. 
 * **Targeted Formula-Wiping:** If a user opts out of the standard 10% Administrative Fee, the script actively hunts down the specific formula array for that fee, clears the row, and forces a `0` to prevent phantom calculations.
 
