@@ -1,15 +1,15 @@
 # Timesheet-Processor
 
-A comprehensive, two-stage operational pipeline designed to bridge the gap between raw field service reports and finalized, client-ready financial documents. 
+A two-stage operational pipeline designed to bridge the gap between field service reports and finalized, client-ready financial documents. 
 
-This system eliminates manual data entry, enforces strict labor law compliance for overtime and holiday billing, and seamlessly injects calculated hours and custom expenses into complex, multi-currency Excel invoice templates without breaking native downstream formulas.
+This system eliminates manual data entry, enforces strict labor law compliance for overtime and holiday billing, and injects calculated hours and custom expenses into complex, multi-currency Excel invoice templates without breaking downstream formulas.
 
 ## How the System Works
 
 The pipeline is split into an AI-driven extraction phase and a Python-based formatting and injection phase.
 
 ### Phase 1: Data Extraction
-Field engineers often submit unstructured timesheets—ranging from scanned PDFs to handwritten images. The first half of the system relies on an LLM-driven OCR agent (Sana AI) to interpret these documents. 
+Field engineers often submit unstructured timesheets—ranging from scanned PDFs to handwritten images. The first half of the system relies on an LLM-driven OCR agent (Sana AI, which uses OpenAI models) to interpret these documents. 
 * **Duration Calculation:** The AI calculates exact shift durations (End Time minus Start Time).
 * **Strict Labor Compliance:** It evaluates every logged hour against strict `08:00 to 16:00` boundaries. Hours within this window are classified as Normal Time; anything outside is flagged as Overtime.
 * **Public Holiday Cross-Referencing:** The agent cross-references the dates against a programmed list of Singapore Ministry of Manpower (MOM) public holidays, automatically applying weekend/overtime multipliers to relevant shifts (including Sunday off-in-lieu rules).
