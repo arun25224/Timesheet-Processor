@@ -280,7 +280,7 @@ def process_invoice_logic(
 # ============================================================
 st.set_page_config(page_title="Invoice Generator", layout="wide")
 
-st.title("Final Invoice Generation")
+st.title("Invoice Generator")
 
 tab1, tab2 = st.tabs(["Single Timesheet Upload (Combined Excel)", "SANA Timesheet Upload"])
 
