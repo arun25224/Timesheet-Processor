@@ -115,7 +115,7 @@ def render_expense_ui(tab_key):
     expense_options = [
         "Shipyard Pass", "Taxi Overseas", "Ferry Fare", "Visa", "Hotel", 
         "Laundry", "Agent Fee", "Excess Baggage Fee", "Airport Tax", 
-        "Flight Ticket", "Misc", "Local transport", "Allowance"
+        "Tools Rental", "Flight Ticket", "Misc", "Local transport", "Allowance"
     ]
     
     for i, exp in enumerate(st.session_state[f"expenses_{tab_key}"]):
@@ -237,7 +237,7 @@ def process_invoice_logic(
     if l_trpt_sum > 0:
         for r in range(50, 80):
             c3_val = str(ws.cell(row=r, column=3).value).strip().lower()
-            if c3_val == "local transport":
+            if "local transport" in c3_val:
                 safe_write(ws, r, 4, l_trpt_sum)
                 break
 
@@ -280,7 +280,8 @@ def process_invoice_logic(
 # ============================================================
 st.set_page_config(page_title="Invoice Generator", layout="wide")
 
-st.title("Invoice Generator")
+st.title("Final Invoice Generation")
+st.write("Select your timesheet format and generate the final invoice template.")
 
 tab1, tab2 = st.tabs(["Single Timesheet Upload (Combined Excel)", "SANA Timesheet Upload"])
 
@@ -315,7 +316,7 @@ with tab1:
                 st.session_state.eng_name_t1 = meta_t1.get("eng_name", "")
                 st.session_state.del_addr_t1 = meta_t1.get("place", "")
                 
-                st.success("Information extracted.")
+                st.success("Information extracted successfully!")
             except Exception as e:
                 st.error(f"Failed to extract information: {str(e)}")
         else:
@@ -372,7 +373,7 @@ with tab1:
                 )
                 
                 info = output["info"]
-                st.info(f" **Data Extracted:**\n"
+                st.info(f"📊 **Data Successfully Extracted:**\n"
                         f"- **Travel Time:** {info['travel']} hours\n"
                         f"- **Normal Time:** {info['nt']} hours\n"
                         f"- **Overtime:** {info['ot']} hours\n"
@@ -380,7 +381,7 @@ with tab1:
                         f"- **Preparation Time:** {info['prep']} hours\n"
                         f"- **Local Transport:** {info['transport']} units")
                 
-                st.success("Invoice Generated.")
+                st.success("Invoice Generated Successfully!")
                 st.download_button(
                     label="Download Final Invoice",
                     data=output["file"],
@@ -422,7 +423,7 @@ with tab2:
                 st.session_state.eng_name_t2 = meta_t2.get("eng_name", "")
                 st.session_state.del_addr_t2 = meta_t2.get("place", "")
                 
-                st.success("Information extracted.")
+                st.success("Information extracted successfully!")
             except Exception as e:
                 st.error(f"Failed to extract information: {str(e)}")
         else:
@@ -475,7 +476,7 @@ with tab2:
                 )
                 
                 info = output["info"]
-                st.info(f" **Data Extracted:**\n"
+                st.info(f"📊 **Data Successfully Extracted:**\n"
                         f"- **Travel Time:** {info['travel']} hours\n"
                         f"- **Normal Time:** {info['nt']} hours\n"
                         f"- **Overtime:** {info['ot']} hours\n"
@@ -483,7 +484,7 @@ with tab2:
                         f"- **Preparation Time:** {info['prep']} hours\n"
                         f"- **Local Transport:** {info['transport']} units")
                 
-                st.success("Invoice Generated.")
+                st.success("Invoice Generated Successfully!")
                 st.download_button(
                     label="Download Final Invoice",
                     data=output["file"],
