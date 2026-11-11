@@ -173,6 +173,10 @@ def process_invoice_logic(
         "prep": prep_sum,
         "transport": l_trpt_sum
     }
+
+    # If no invoice template is uploaded, return the extracted data but skip Excel generation
+    if not template_file:
+        return {"file": None, "info": extracted_info}
     
     if template_file.name.lower().endswith('.csv'):
         raise ValueError("The Invoice Template must be an Excel file (.xlsx).")
@@ -292,9 +296,9 @@ with tab1:
     st.markdown("### 1. Upload Required Files")
     col1, col2 = st.columns(2)
     with col1:
-        timesheet_excel_t1 = st.file_uploader("Upload Processed Timesheet (Excel)", type=["xlsx"], key="ts_upload_t1")
+        timesheet_excel_t1 = st.file_uploader("Upload Processed Timesheet (Excel) (Optional)", type=["xlsx"], key="ts_upload_t1")
     with col2:
-        template_excel_t1 = st.file_uploader("Upload Blank Invoice Template", type=["xlsx"], key="inv_upload_t1")
+        template_excel_t1 = st.file_uploader("Upload Blank Invoice Template (Optional)", type=["xlsx"], key="inv_upload_t1")
         
     if st.button("Extract Information", key="extract_t1"):
         if timesheet_excel_t1:
@@ -352,10 +356,8 @@ with tab1:
     user_expenses_t1 = render_expense_ui("t1")
 
     if st.button("Generate Final Invoice", type="primary", key="btn_t1"):
-        if not timesheet_excel_t1 or not template_excel_t1:
-            st.error("Please upload the Processed Timesheet AND the Invoice Template.")
-        else:
-            try:
+        try:
+            if timesheet_excel_t1:
                 xls = pd.ExcelFile(timesheet_excel_t1)
                 sheet_names = xls.sheet_names
                 
@@ -364,23 +366,27 @@ with tab1:
                 
                 eng_df = pd.read_excel(timesheet_excel_t1, sheet_name=eng_sheet)
                 client_df = pd.read_excel(timesheet_excel_t1, sheet_name=client_sheet)
-                
-                output = process_invoice_logic(
-                    eng_df, client_df, template_excel_t1, 
-                    cust_name_t1, inv_address_t1, del_address_t1, reference_t1, cust_po_t1, 
-                    proj_no_t1, svc_type_t1, vessel_name_t1, vessel_no_t1, engineer_name_invoice_t1, 
-                    include_admin_fee_t1, position_t1, currency_t1, user_expenses_t1
-                )
-                
-                info = output["info"]
-                st.info(f"📊 **Data Successfully Extracted:**\n"
-                        f"- **Travel Time:** {info['travel']} hours\n"
-                        f"- **Normal Time:** {info['nt']} hours\n"
-                        f"- **Overtime:** {info['ot']} hours\n"
-                        f"- **Waiting Time:** {info['waiting']} hours\n"
-                        f"- **Preparation Time:** {info['prep']} hours\n"
-                        f"- **Local Transport:** {info['transport']} units")
-                
+            else:
+                eng_df = pd.DataFrame()
+                client_df = pd.DataFrame()
+            
+            output = process_invoice_logic(
+                eng_df, client_df, template_excel_t1, 
+                cust_name_t1, inv_address_t1, del_address_t1, reference_t1, cust_po_t1, 
+                proj_no_t1, svc_type_t1, vessel_name_t1, vessel_no_t1, engineer_name_invoice_t1, 
+                include_admin_fee_t1, position_t1, currency_t1, user_expenses_t1
+            )
+            
+            info = output["info"]
+            st.info(f"📊 **Data Successfully Extracted:**\n"
+                    f"- **Travel Time:** {info['travel']} hours\n"
+                    f"- **Normal Time:** {info['nt']} hours\n"
+                    f"- **Overtime:** {info['ot']} hours\n"
+                    f"- **Waiting Time:** {info['waiting']} hours\n"
+                    f"- **Preparation Time:** {info['prep']} hours\n"
+                    f"- **Local Transport:** {info['transport']} units")
+            
+            if output["file"]:
                 st.success("Invoice Generated Successfully!")
                 st.download_button(
                     label="Download Final Invoice",
@@ -389,8 +395,10 @@ with tab1:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_t1"
                 )
-            except Exception as e:
-                st.error(f"Error occurred while processing: {str(e)}")
+            else:
+                st.warning("Invoice generation skipped because no template was uploaded.")
+        except Exception as e:
+            st.error(f"Error occurred while processing: {str(e)}")
 
 # ------------------------------------------------------------
 # TAB 2: STANDALONE TIMESHEET UPLOAD
@@ -399,9 +407,9 @@ with tab2:
     st.markdown("### 1. Upload Required Files")
     col1_t2, col2_t2 = st.columns(2)
     with col1_t2:
-        client_timesheet_t2 = st.file_uploader("Upload Client Timesheet", type=["xlsx", "csv"], key="cli_upload_t2")
+        client_timesheet_t2 = st.file_uploader("Upload Client Timesheet (Optional)", type=["xlsx", "csv"], key="cli_upload_t2")
     with col2_t2:
-        template_excel_t2 = st.file_uploader("Upload Blank Invoice Template", type=["xlsx", "csv"], key="inv_upload_t2")
+        template_excel_t2 = st.file_uploader("Upload Blank Invoice Template (Optional)", type=["xlsx", "csv"], key="inv_upload_t2")
         
     if st.button("Extract Information", key="extract_t2"):
         if client_timesheet_t2:
@@ -459,31 +467,32 @@ with tab2:
     user_expenses_t2 = render_expense_ui("t2")
 
     if st.button("Generate Final Invoice", type="primary", key="btn_t2"):
-        if not client_timesheet_t2 or not template_excel_t2:
-            st.error("Please upload the Client Timesheet AND the Invoice Template.")
-        else:
-            try:
+        try:
+            if client_timesheet_t2:
                 if client_timesheet_t2.name.lower().endswith('.csv'):
                     df_t2 = pd.read_csv(client_timesheet_t2)
                 else:
                     df_t2 = pd.read_excel(client_timesheet_t2, sheet_name=0)
-                
-                output = process_invoice_logic(
-                    df_t2, df_t2, template_excel_t2, 
-                    cust_name_t2, inv_address_t2, del_address_t2, reference_t2, cust_po_t2, 
-                    proj_no_t2, svc_type_t2, vessel_name_t2, vessel_no_t2, engineer_name_invoice_t2, 
-                    include_admin_fee_t2, position_t2, currency_t2, user_expenses_t2
-                )
-                
-                info = output["info"]
-                st.info(f"📊 **Data Successfully Extracted:**\n"
-                        f"- **Travel Time:** {info['travel']} hours\n"
-                        f"- **Normal Time:** {info['nt']} hours\n"
-                        f"- **Overtime:** {info['ot']} hours\n"
-                        f"- **Waiting Time:** {info['waiting']} hours\n"
-                        f"- **Preparation Time:** {info['prep']} hours\n"
-                        f"- **Local Transport:** {info['transport']} units")
-                
+            else:
+                df_t2 = pd.DataFrame()
+            
+            output = process_invoice_logic(
+                df_t2, df_t2, template_excel_t2, 
+                cust_name_t2, inv_address_t2, del_address_t2, reference_t2, cust_po_t2, 
+                proj_no_t2, svc_type_t2, vessel_name_t2, vessel_no_t2, engineer_name_invoice_t2, 
+                include_admin_fee_t2, position_t2, currency_t2, user_expenses_t2
+            )
+            
+            info = output["info"]
+            st.info(f"📊 **Data Successfully Extracted:**\n"
+                    f"- **Travel Time:** {info['travel']} hours\n"
+                    f"- **Normal Time:** {info['nt']} hours\n"
+                    f"- **Overtime:** {info['ot']} hours\n"
+                    f"- **Waiting Time:** {info['waiting']} hours\n"
+                    f"- **Preparation Time:** {info['prep']} hours\n"
+                    f"- **Local Transport:** {info['transport']} units")
+            
+            if output["file"]:
                 st.success("Invoice Generated Successfully!")
                 st.download_button(
                     label="Download Final Invoice",
@@ -492,5 +501,7 @@ with tab2:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_t2"
                 )
-            except Exception as e:
-                st.error(f"Error occurred while processing: {str(e)}")
+            else:
+                st.warning("Invoice generation skipped because no template was uploaded.")
+        except Exception as e:
+            st.error(f"Error occurred while processing: {str(e)}")
